@@ -4,17 +4,18 @@
 #include <esp32-hal-ledc.h>
 
 // Motor Driver Pins
-const int pwmPin = 12;   // PWM speed control
-const int dirPin = 11;   // Direction control
+const int pwmPin = 7;   // PWM speed control
+const int dirPin = 6;   // Direction control
 
 // Encoder Pins
-const int encoderPinA = 14;
-const int encoderPinB = 13;
+const int encoderPinA = 5;
+const int encoderPinB = 4;
 
 volatile long encoderTicks = 0;  // Total encoder ticks
 float rotations = 0.0;
 
-const int TICKS_PER_REV = 2700; // Replace with your encoder's actual PPR
+const int TICKS_PER_REV = 3840; // PPR 13 PPR × 2 (quadrature) × 104 (gear ratio) = 2704 ticks/rev at output
+
 
 void IRAM_ATTR handleEncoderA() {
   bool A = digitalRead(encoderPinA);
