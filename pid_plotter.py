@@ -1,0 +1,311 @@
+import serial
+import matplotlib.pyplot as plt
+import re
+import time
+
+# === User input to select plots ===
+print("Enter which plots to show separated by space (options: RPM PWM ERROR PID), or 'all' to show all:")
+user_input = input().strip().lower()
+selected_plots = set(user_input.split())
+
+if 'all' in selected_plots:
+    selected_plots = {'rpm', 'pwm', 'error', 'pid'}
+
+# Open serial port - update COM port as needed
+ser = serial.Serial('COM7', 115200, timeout=1)
+time.sleep(2)
+
+# Data buffers
+times = []
+rpmL_data = []
+rpmR_data = []
+pwmL_data = []
+pwmR_data = []
+rotL_data = []
+rotR_data = []
+
+start_time = time.time()
+
+# Initialize 2x2 subplot
+plt.ion()
+fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+fig.suptitle('Motor PID Telemetry')
+
+# --- Setup plot lines & titles based on user selection ---
+def hide_ax(ax):
+    ax.set_visible(False)
+
+# Track which plots are visible so we can update only them
+visible_axes = []
+
+# RPM Error plot (top-left)
+if 'rpm' in selected_plots:
+    line_rpm_error, = axs[0, 0].plot([], [], label='RPM Error (L-R)', color='blue')
+    axs[0, 0].set_title('RPM Difference')
+    axs[0, 0].set_ylabel('RPM')
+    axs[0, 0].grid(True)
+    axs[0, 0].legend()
+    visible_axes.append(('rpm', axs[0,0], line_rpm_error))
+else:
+    hide_ax(axs[0, 0])
+
+# PWM plot (top-right)
+if 'pwm' in selected_plots:
+    line_pwmL, = axs[0, 1].plot([], [], label='PWM Left', color='red')
+    line_pwmR, = axs[0, 1].plot([], [], label='PWM Right', color='green')
+    axs[0, 1].set_title('PWM Values')
+    axs[0, 1].set_ylabel('PWM (0-4095)')
+    axs[0, 1].grid(True)
+    axs[0, 1].legend()
+    visible_axes.append(('pwm', axs[0,1], (line_pwmL, line_pwmR)))
+else:
+    hide_ax(axs[0, 1])
+
+# Error plot replacing Rotations (bottom-left)
+if 'error' in selected_plots:
+    line_rot_error, = axs[1, 0].plot([], [], label='Rotation Error (L-R)', color='magenta')
+    axs[1, 0].set_title('Rotation Error Over Time')
+    axs[1, 0].set_xlabel('Time (s)')
+    axs[1, 0].set_ylabel('Rotation Error (rev)')
+    axs[1, 0].grid(True)
+    axs[1, 0].legend()
+    visible_axes.append(('error', axs[1,0], line_rot_error))
+else:
+    hide_ax(axs[1, 0])
+
+# PID response plot (bottom-right)
+if 'pid' in selected_plots:
+    line_rpmL, = axs[1, 1].plot([], [], label='RPM Left (Slave)', color='blue')
+    line_rpmR, = axs[1, 1].plot([], [], label='RPM Right (Master)', color='black', linestyle='dashed')
+    axs[1, 1].set_title('PID Response (Master vs Slave)')
+    axs[1, 1].set_xlabel('Time (s)')
+    axs[1, 1].set_ylabel('RPM')
+    axs[1, 1].grid(True)
+    axs[1, 1].legend()
+    visible_axes.append(('pid', axs[1,1], (line_rpmL, line_rpmR)))
+else:
+    hide_ax(axs[1, 1])
+
+# Regex pattern for parsing serial input
+pattern = re.compile(
+    r"L:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*R:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*PWM:\s*L=(\d+),\s*R=(\d+)\s*\|\s*Rot:\s*L=([0-9\.]+),\s*R=([0-9\.]+)"
+)
+
+try:
+    while True:
+        line_bytes = ser.readline()
+        line_str = line_bytes.decode(errors='ignore').strip()
+
+        match = pattern.search(line_str)
+        if match:
+            rpmL = float(match.group(1))
+            rpmR = float(match.group(2))
+            pwmL = int(match.group(3))
+            pwmR = int(match.group(4))
+            rotL = float(match.group(5))
+            rotR = float(match.group(6))
+
+            t = time.time() - start_time
+
+            # Append data
+            times.append(t)
+            rpmL_data.append(rpmL)
+            rpmR_data.append(rpmR)
+            pwmL_data.append(pwmL)
+            pwmR_data.append(pwmR)
+            rotL_data.append(rotL)
+            rotR_data.append(rotR)
+
+            # Update only selected plots
+            for name, ax, lines in visible_axes:
+                if name == 'rpm':
+                    rpm_error = [a - b for a, b in zip(rpmL_data, rpmR_data)]
+                    lines.set_data(times, rpm_error)
+                elif name == 'pwm':
+                    line_pwmL, line_pwmR = lines
+                    line_pwmL.set_data(times, pwmL_data)
+                    line_pwmR.set_data(times, pwmR_data)
+                elif name == 'error':
+                    rot_error = [a - b for a, b in zip(rotL_data, rotR_data)]
+                    lines.set_data(times, rot_error)
+                elif name == 'pid':
+                    line_rpmL, line_rpmR = lines
+                    line_rpmL.set_data(times, rpmL_data)
+                    line_rpmR.set_data(times, rpmR_data)
+
+                ax.relim()
+                ax.autoscale_view()
+
+            plt.pause(0.01)
+
+except KeyboardInterrupt:
+    print("Plotting stopped by user")
+
+
+# import serial
+# import matplotlib.pyplot as plt
+# import re
+# import time
+
+# # Open serial port - update COM port as needed
+# ser = serial.Serial('COM7', 115200, timeout=1)
+# time.sleep(2)
+
+# # Data buffers
+# times = []
+# rpmL_data = []
+# rpmR_data = []
+# pwmL_data = []
+# pwmR_data = []
+# rotL_data = []
+# rotR_data = []
+
+# start_time = time.time()
+
+# # Initialize 2x2 subplot
+# plt.ion()
+# fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+# fig.suptitle('Motor PID Telemetry')
+
+# # Lines for plots
+# line_rpm_error, = axs[0, 0].plot([], [], label='RPM Error (L-R)', color='blue')
+# axs[0, 0].set_title('RPM Difference')
+# axs[0, 0].set_xlabel('Time (s)')
+# axs[0, 0].set_ylabel('RPM')
+# axs[0, 0].grid(True)
+# axs[0, 0].legend()
+
+# line_pwmL, = axs[0, 1].plot([], [], label='PWM Left', color='red')
+# line_pwmR, = axs[0, 1].plot([], [], label='PWM Right', color='green')
+# axs[0, 1].set_title('PWM Values')
+# axs[0, 1].set_xlabel('Time (s)')
+# axs[0, 1].set_ylabel('PWM (0-4095)')
+# axs[0, 1].grid(True)
+# axs[0, 1].legend()
+
+# line_rotL, = axs[1, 0].plot([], [], label='Rotation Left', color='purple')
+# line_rotR, = axs[1, 0].plot([], [], label='Rotation Right', color='orange')
+# axs[1, 0].set_title('Rotations Over Time')
+# axs[1, 0].set_xlabel('Time (s)')
+# axs[1, 0].set_ylabel('Rotations (rev)')
+# axs[1, 0].grid(True)
+# axs[1, 0].legend()
+
+# line_rpmL, = axs[1, 1].plot([], [], label='RPM Left (Slave)', color='blue')
+# line_rpmR, = axs[1, 1].plot([], [], label='RPM Right (Master)', color='black', linestyle='dashed')
+# axs[1, 1].set_title('PID Response (Master vs Slave)')
+# axs[1, 1].set_xlabel('Time (s)')
+# axs[1, 1].set_ylabel('RPM')
+# axs[1, 1].grid(True)
+# axs[1, 1].legend()
+
+# # Regex to extract all needed values from your serial print line
+# pattern = re.compile(
+#     r"L:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*R:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*PWM:\s*L=(\d+),\s*R=(\d+)\s*\|\s*Rot:\s*L=([0-9\.]+),\s*R=([0-9\.]+)"
+# )
+
+# try:
+#     while True:
+#         line_bytes = ser.readline()
+#         line_str = line_bytes.decode(errors='ignore').strip()
+
+#         match = pattern.search(line_str)
+#         if match:
+#             rpmL = float(match.group(1))
+#             rpmR = float(match.group(2))
+#             pwmL = int(match.group(3))
+#             pwmR = int(match.group(4))
+#             rotL = float(match.group(5))
+#             rotR = float(match.group(6))
+
+#             t = time.time() - start_time
+
+#             # Append data
+#             times.append(t)
+#             rpmL_data.append(rpmL)
+#             rpmR_data.append(rpmR)
+#             pwmL_data.append(pwmL)
+#             pwmR_data.append(pwmR)
+#             rotL_data.append(rotL)
+#             rotR_data.append(rotR)
+
+#             # Update plots
+#             # 1. RPM Error
+#             rpm_error = [a - b for a, b in zip(rpmL_data, rpmR_data)]
+#             line_rpm_error.set_data(times, rpm_error)
+#             axs[0, 0].relim()
+#             axs[0, 0].autoscale_view()
+
+#             # 2. PWM
+#             line_pwmL.set_data(times, pwmL_data)
+#             line_pwmR.set_data(times, pwmR_data)
+#             axs[0, 1].relim()
+#             axs[0, 1].autoscale_view()
+
+#             # 3. Rotations
+#             line_rotL.set_data(times, rotL_data)
+#             line_rotR.set_data(times, rotR_data)
+#             axs[1, 0].relim()
+#             axs[1, 0].autoscale_view()
+
+#             # 4. PID Response
+#             line_rpmL.set_data(times, rpmL_data)
+#             line_rpmR.set_data(times, rpmR_data)
+#             axs[1, 1].relim()
+#             axs[1, 1].autoscale_view()
+
+#             plt.pause(0.01)
+
+# except KeyboardInterrupt:
+#     print("Plotting stopped by user")
+
+
+# import serial
+# import matplotlib.pyplot as plt
+# import re
+# import time
+
+# # Adjust COM port and baud rate to match your board
+# ser = serial.Serial('COM7', 115200, timeout=1)
+# time.sleep(2)
+
+# # Initialize plot
+# plt.ion()
+# fig, ax = plt.subplots()
+# times, errors = [], []
+# line, = ax.plot([], [], label='RPM Error (L - R)', color='b')
+# ax.set_title("Motor Synchronization PID")
+# ax.set_xlabel("Time (s)")
+# ax.set_ylabel("RPM Difference")
+# ax.grid(True)
+# ax.legend()
+
+# start = time.time()
+
+# while True:
+#     try:
+#         line_bytes = ser.readline()
+#         line_str = line_bytes.decode(errors='ignore').strip()
+
+#         # Match this line: L: 25.4 RPM | R: 22.1 RPM | ...
+#         match = re.search(r"L:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*R:\s*(-?\d+\.\d+)", line_str)
+#         if match:
+#             rpmL = float(match.group(1))
+#             rpmR = float(match.group(2))
+#             err = rpmL - rpmR
+#             t = time.time() - start
+
+#             times.append(t)
+#             errors.append(err)
+
+#             # Update plot
+#             line.set_xdata(times)
+#             line.set_ydata(errors)
+#             ax.relim()
+#             ax.autoscale_view()
+#             plt.draw()
+#             plt.pause(0.01)
+
+#     except KeyboardInterrupt:
+#         print("Stopped by user.")
+#         break

@@ -19,9 +19,9 @@ volatile long ticksL = 0;
 volatile long ticksR = 0;
 
 // PID constants for synchronization
-const float Kp_sync = 2.0;
-const float Ki_sync = 0.05;
-const float Kd_sync = 0.01;
+const float Kp_sync = 32.0;
+const float Ki_sync = 0.1;
+const float Kd_sync = 15.0;
 
 // Encoder & motor specs
 const int CPR = 64;
@@ -41,7 +41,7 @@ long lastTicksL = 0;
 long lastTicksR = 0;
 
 // Base PWM speed (0-4095)
-float basePWM = 2000;
+float basePWM = 4095;
 
 // Current command
 char command = 'f'; // start forward
@@ -179,7 +179,7 @@ void loop() {
     }
 
     // Apply PID correction only to left motor PWM to sync speeds
-    float pwmL_out = constrain(pwmL_base - correctionPWM, -4095, 4095);
+    float pwmL_out = constrain(pwmL_base - correctionPWM, 0, 4095);
     float pwmR_out = constrain(pwmR_base, -4095, 4095);
 
     // Set motor speeds
@@ -190,8 +190,11 @@ void loop() {
     float rotR = currentTicksR / (float)TICKS_PER_WHEEL_REV;
 
     // Debug output
-    Serial.printf("L: %5.1f RPM | R: %5.1f RPM | PWM: L=%4.0f, R=%4.0f | Rot: L=%.2f, R=%.2f\n",
-                  rpmL, rpmR, pwmL_out, pwmR_out, rotL, rotR);
+    // Serial.printf("L: %5.1f RPM | R: %5.1f RPM | PWM: L=%4.0f, R=%4.0f | Rot: L=%.2f, R=%.2f\n",
+    //               rpmL, rpmR, pwmL_out, pwmR_out, rotL, rotR);
+
+    Serial.printf("L: %5.1f RPM | R: %5.1f RPM | PWM: L=%d, R=%d | Rot: L=%.2f, R=%.2f\n",
+              rpmL, rpmR, (int)pwmL_out, (int)pwmR_out, rotL, rotR);
 
     // Print synchronization status
     // Serial.printf("Cmd:%c Speed:%d L_RPM:%.1f R_RPM:%.1f Corr:%.1f PWM_L:%.0f PWM_R:%.0f\n",
