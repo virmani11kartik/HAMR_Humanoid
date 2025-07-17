@@ -19,7 +19,7 @@ volatile long ticksL = 0;
 volatile long ticksR = 0;
 
 // PID constants for synchronization
-const float Kp_sync = 32.0;
+const float Kp_sync = 30.0;
 const float Ki_sync = 0.1;
 const float Kd_sync = 15.0;
 
@@ -41,7 +41,7 @@ long lastTicksL = 0;
 long lastTicksR = 0;
 
 // Base PWM speed (0-4095)
-float basePWM = 4095;
+float basePWM = 3000;
 
 // Current command
 char command = 'f'; // start forward

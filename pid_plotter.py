@@ -2,14 +2,27 @@ import serial
 import matplotlib.pyplot as plt
 import re
 import time
+import math
 
-# === User input to select plots ===
+# Prompt user for which plots to display
 print("Enter which plots to show separated by space (options: RPM PWM ERROR PID), or 'all' to show all:")
 user_input = input().strip().lower()
-selected_plots = set(user_input.split())
+if user_input == 'all':
+    selected_plots = ['rpm', 'pwm', 'error', 'pid']
+else:
+    selected_plots = user_input.split()
 
-if 'all' in selected_plots:
-    selected_plots = {'rpm', 'pwm', 'error', 'pid'}
+num_plots = len(selected_plots)
+
+# Determine subplot grid shape dynamically
+if num_plots == 1:
+    nrows, ncols = 1, 1
+elif num_plots == 2:
+    nrows, ncols = 2, 1
+elif num_plots == 3:
+    nrows, ncols = 3, 1
+else:
+    nrows, ncols = 4, 4  # fallback for 4 or more plots
 
 # Open serial port - update COM port as needed
 ser = serial.Serial('COM7', 115200, timeout=1)
@@ -26,67 +39,62 @@ rotR_data = []
 
 start_time = time.time()
 
-# Initialize 2x2 subplot
 plt.ion()
-fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+fig, axs = plt.subplots(nrows, ncols, figsize=(4*ncols, 3*nrows))
 fig.suptitle('Motor PID Telemetry')
 
-# --- Setup plot lines & titles based on user selection ---
-def hide_ax(ax):
-    ax.set_visible(False)
+# Add single x-axis label for entire figure, centered below all subplots
+fig.text(0.5, 0.04, 'Time (s)', ha='center', va='center', fontsize=12)
 
-# Track which plots are visible so we can update only them
-visible_axes = []
-
-# RPM Error plot (top-left)
-if 'rpm' in selected_plots:
-    line_rpm_error, = axs[0, 0].plot([], [], label='RPM Error (L-R)', color='blue')
-    axs[0, 0].set_title('RPM Difference')
-    axs[0, 0].set_ylabel('RPM')
-    axs[0, 0].grid(True)
-    axs[0, 0].legend()
-    visible_axes.append(('rpm', axs[0,0], line_rpm_error))
+# Flatten axs to 1D list for easier indexing even if 1D or 2D
+if isinstance(axs, plt.Axes):
+    axs = [axs]
 else:
-    hide_ax(axs[0, 0])
+    axs = axs.flatten()
 
-# PWM plot (top-right)
-if 'pwm' in selected_plots:
-    line_pwmL, = axs[0, 1].plot([], [], label='PWM Left', color='red')
-    line_pwmR, = axs[0, 1].plot([], [], label='PWM Right', color='green')
-    axs[0, 1].set_title('PWM Values')
-    axs[0, 1].set_ylabel('PWM (0-4095)')
-    axs[0, 1].grid(True)
-    axs[0, 1].legend()
-    visible_axes.append(('pwm', axs[0,1], (line_pwmL, line_pwmR)))
-else:
-    hide_ax(axs[0, 1])
+plot_lines = []
 
-# Error plot replacing Rotations (bottom-left)
-if 'error' in selected_plots:
-    line_rot_error, = axs[1, 0].plot([], [], label='Rotation Error (L-R)', color='magenta')
-    axs[1, 0].set_title('Rotation Error Over Time')
-    axs[1, 0].set_xlabel('Time (s)')
-    axs[1, 0].set_ylabel('Rotation Error (rev)')
-    axs[1, 0].grid(True)
-    axs[1, 0].legend()
-    visible_axes.append(('error', axs[1,0], line_rot_error))
-else:
-    hide_ax(axs[1, 0])
+# Prepare plots as per selection
+for i, plot_name in enumerate(selected_plots):
+    ax = axs[i]
+    if plot_name == 'rpm':
+        line, = ax.plot([], [], label='RPM Error (L-R)', color='blue')
+        ax.set_title('RPM Difference')
+        ax.set_ylabel('RPM')
+        ax.grid(True)
+        ax.legend()
+        plot_lines.append(('rpm', ax, line))
+    elif plot_name == 'pwm':
+        lineL, = ax.plot([], [], label='PWM Left', color='red')
+        lineR, = ax.plot([], [], label='PWM Right', color='green')
+        ax.set_title('PWM Values')
+        ax.set_ylabel('PWM (0-4095)')
+        ax.grid(True)
+        ax.legend()
+        plot_lines.append(('pwm', ax, (lineL, lineR)))
+    elif plot_name == 'error':
+        line, = ax.plot([], [], label='Rotation Error (L-R)', color='magenta')
+        ax.set_title('Rotation Error Over Time')
+        ax.set_ylabel('Rotation Error (rev)')
+        ax.grid(True)
+        ax.legend()
+        plot_lines.append(('error', ax, line))
+    elif plot_name == 'pid':
+        lineL, = ax.plot([], [], label='RPM Left (Slave)', color='blue')
+        lineR, = ax.plot([], [], label='RPM Right (Master)', color='black', linestyle='dashed')
+        ax.set_title('PID Response (Master vs Slave)')
+        ax.set_ylabel('RPM')
+        ax.grid(True)
+        ax.legend()
+        plot_lines.append(('pid', ax, (lineL, lineR)))
+    else:
+        ax.set_visible(False)  # Hide any unexpected plots
 
-# PID response plot (bottom-right)
-if 'pid' in selected_plots:
-    line_rpmL, = axs[1, 1].plot([], [], label='RPM Left (Slave)', color='blue')
-    line_rpmR, = axs[1, 1].plot([], [], label='RPM Right (Master)', color='black', linestyle='dashed')
-    axs[1, 1].set_title('PID Response (Master vs Slave)')
-    axs[1, 1].set_xlabel('Time (s)')
-    axs[1, 1].set_ylabel('RPM')
-    axs[1, 1].grid(True)
-    axs[1, 1].legend()
-    visible_axes.append(('pid', axs[1,1], (line_rpmL, line_rpmR)))
-else:
-    hide_ax(axs[1, 1])
+# Hide any extra unused subplots
+for j in range(len(selected_plots), len(axs)):
+    axs[j].set_visible(False)
 
-# Regex pattern for parsing serial input
+# Regex pattern for serial input parsing
 pattern = re.compile(
     r"L:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*R:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*PWM:\s*L=(\d+),\s*R=(\d+)\s*\|\s*Rot:\s*L=([0-9\.]+),\s*R=([0-9\.]+)"
 )
@@ -107,7 +115,6 @@ try:
 
             t = time.time() - start_time
 
-            # Append data
             times.append(t)
             rpmL_data.append(rpmL)
             rpmR_data.append(rpmR)
@@ -116,22 +123,21 @@ try:
             rotL_data.append(rotL)
             rotR_data.append(rotR)
 
-            # Update only selected plots
-            for name, ax, lines in visible_axes:
+            for name, ax, lines in plot_lines:
                 if name == 'rpm':
                     rpm_error = [a - b for a, b in zip(rpmL_data, rpmR_data)]
                     lines.set_data(times, rpm_error)
                 elif name == 'pwm':
-                    line_pwmL, line_pwmR = lines
-                    line_pwmL.set_data(times, pwmL_data)
-                    line_pwmR.set_data(times, pwmR_data)
+                    lineL, lineR = lines
+                    lineL.set_data(times, pwmL_data)
+                    lineR.set_data(times, pwmR_data)
                 elif name == 'error':
                     rot_error = [a - b for a, b in zip(rotL_data, rotR_data)]
                     lines.set_data(times, rot_error)
                 elif name == 'pid':
-                    line_rpmL, line_rpmR = lines
-                    line_rpmL.set_data(times, rpmL_data)
-                    line_rpmR.set_data(times, rpmR_data)
+                    lineL, lineR = lines
+                    lineL.set_data(times, rpmL_data)
+                    lineR.set_data(times, rpmR_data)
 
                 ax.relim()
                 ax.autoscale_view()
