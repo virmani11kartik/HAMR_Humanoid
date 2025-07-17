@@ -14,42 +14,39 @@ const int dirR = 42;
 const int encAR = 1;
 const int encBR = 2;
 
-// Encoder counts
+// Encoder counts (volatile for ISR)
 volatile long ticksL = 0;
 volatile long ticksR = 0;
 
-// PID constants
-const float Kp = 1.2;    // Slightly increased for better response
-const float Ki = 0.08;   // Increased integral for better tracking
-const float Kd = 0.03;   // Slightly increased derivative
+// PID constants for synchronization
+const float Kp_sync = 2.0;
+const float Ki_sync = 0.05;
+const float Kd_sync = 0.01;
 
 // Encoder & motor specs
 const int CPR = 64;
 const int GEAR_RATIO = 150;
-const int TICKS_PER_WHEEL_REV = CPR * GEAR_RATIO; // 9600
+const int TICKS_PER_WHEEL_REV = CPR * GEAR_RATIO; // 9600 ticks per wheel revolution
 
-// Control interval
+// Control interval (ms)
 const unsigned long PID_INTERVAL = 50;
 
-// PID state
-float integralL = 0, integralR = 0;
-float lastErrL = 0, lastErrR = 0;
-long lastTicksL = 0, lastTicksR = 0;
+// PID state variables
+float integralSync = 0;
+float lastErrorSync = 0;
+
+// Timing variables
 unsigned long lastPidTime = 0;
+long lastTicksL = 0;
+long lastTicksR = 0;
 
-// Target speed in ticks/sec
-float targetTicks = 0;  // Single target for both wheels
+// Base PWM speed (0-4095)
+float basePWM = 2000;
 
-// Control variables
-char command = 'f';
-float desiredRPM = 50;
+// Current command
+char command = 'f'; // start forward
 
-// Motor synchronization
-float actualSpeedL = 0;
-float actualSpeedR = 0;
-float maxDeviation = 5.0;  // Max allowed speed difference (RPM)
-
-// Encoder interrupts
+// Encoder interrupts (quadrature decoding)
 void IRAM_ATTR handleEncL() {
   bool A = digitalRead(encAL);
   bool B = digitalRead(encBL);
@@ -59,12 +56,12 @@ void IRAM_ATTR handleEncL() {
 void IRAM_ATTR handleEncR() {
   bool A = digitalRead(encAR);
   bool B = digitalRead(encBR);
-  ticksR += (A == B) ? -1 : 1;  // Inverted to fix direction issue
+  ticksR += (A == B) ? -1 : 1;  // Inverted to fix direction issue if needed
 }
 
 // Set motor PWM and direction
 void setMotor(int pwmPin, int dirPin, float pwmVal, int channel) {
-  pwmVal = constrain(pwmVal, -255, 255);
+  pwmVal = constrain(pwmVal, -4095, 4095);
   if (pwmVal >= 0) {
     digitalWrite(dirPin, HIGH);
     ledcWrite(channel, (int)pwmVal);
@@ -72,16 +69,6 @@ void setMotor(int pwmPin, int dirPin, float pwmVal, int channel) {
     digitalWrite(dirPin, LOW);
     ledcWrite(channel, (int)(-pwmVal));
   }
-}
-
-// Convert RPM to ticks per second
-float rpmToTicksPerSec(float rpm) {
-  return (rpm * TICKS_PER_WHEEL_REV) / 60.0;
-}
-
-// Convert ticks per second to output shaft RPM
-float ticksPerSecToRPM(float ticksPerSec) {
-  return (ticksPerSec * 60.0) / TICKS_PER_WHEEL_REV;
 }
 
 void setup() {
@@ -93,143 +80,359 @@ void setup() {
   pinMode(pwmR, OUTPUT);
   pinMode(dirR, OUTPUT);
 
-  // Setup PWM channels
-  ledcSetup(0, 5000, 8);
-  ledcSetup(1, 5000, 8);
+  // Setup PWM channels at 5 kHz, 12-bit resolution
+  ledcSetup(0, 5000, 12);
+  ledcSetup(1, 5000, 12);
   ledcAttachPin(pwmL, 0);
   ledcAttachPin(pwmR, 1);
 
-  // Encoder pins
+  // Encoder pins with pull-ups
   pinMode(encAL, INPUT_PULLUP);
   pinMode(encBL, INPUT_PULLUP);
   pinMode(encAR, INPUT_PULLUP);
   pinMode(encBR, INPUT_PULLUP);
 
-  // Interrupt setup
+  // Attach interrupts on channel A for both encoders
   attachInterrupt(digitalPinToInterrupt(encAL), handleEncL, CHANGE);
   attachInterrupt(digitalPinToInterrupt(encAR), handleEncR, CHANGE);
 
   lastPidTime = millis();
-  
-  Serial.println("Coordinated Motor Control Ready");
-  Serial.println("Commands: 'f'=forward, 'b'=backward, 's'=stop, '+'=inc RPM, '-'=dec RPM");
-  Serial.printf("Initial Target RPM: %.1f\n", desiredRPM);
+
+  Serial.println("Motor Sync Control Ready");
+  Serial.println("Commands: f=forward, b=backward, r=right, l=left, s=stop, +=faster, -=slower");
+  Serial.printf("Initial Speed PWM: %.0f\n", basePWM);
 }
 
 void loop() {
   // Handle serial commands
   if (Serial.available()) {
     char newCommand = Serial.read();
-    
-    if (newCommand == 'f' || newCommand == 'b' || newCommand == 's') {
+    if (newCommand == 'f' || newCommand == 'b' || newCommand == 'r' || newCommand == 'l' || newCommand == 's') {
       command = newCommand;
+      integralSync = 0;
+      lastErrorSync = 0;
       Serial.printf("Command: %c\n", command);
-      
-      // Reset PID state when changing commands
-      integralL = 0;
-      integralR = 0;
-      lastErrL = 0;
-      lastErrR = 0;
-    }
-    else if (newCommand == '+') {
-      desiredRPM += 5.0;
-      Serial.printf("RPM+: %.1f\n", desiredRPM);
-    }
-    else if (newCommand == '-') {
-      // Fixed: Use conditional instead of max() with mismatched types
-      desiredRPM -= 5.0;
-      if (desiredRPM < 0) desiredRPM = 0;
-      Serial.printf("RPM-: %.1f\n", desiredRPM);
+    } else if (newCommand == '+') {
+      basePWM += 10;
+      if (basePWM > 4095) basePWM = 4095;
+      Serial.printf("Speed increased: %d\n", (int)basePWM);
+    } else if (newCommand == '-') {
+      basePWM -= 10;
+      if (basePWM < 0) basePWM = 0;
+      Serial.printf("Speed decreased: %d\n", (int)basePWM);
     }
   }
 
-  // Set target speed based on command
-  switch (command) {
-    case 'f': // Forward
-      targetTicks = rpmToTicksPerSec(desiredRPM);
-      break;
-    case 'b': // Backward
-      targetTicks = -rpmToTicksPerSec(desiredRPM);
-      break;
-    case 's': // Stop
-    default:
-      targetTicks = 0;
-      break;
-  }
-
-  // Run PID control at fixed interval
+  // PID loop timing
   unsigned long now = millis();
   if (now - lastPidTime >= PID_INTERVAL) {
     float dt = (now - lastPidTime) / 1000.0;
 
-    // Get current encoder counts
+    // Read encoder counts atomically
+    noInterrupts();
     long currentTicksL = ticksL;
     long currentTicksR = ticksR;
+    interrupts();
 
-    // Calculate actual speeds (ticks per second)
-    actualSpeedL = (currentTicksL - lastTicksL) / dt;
-    actualSpeedR = (currentTicksR - lastTicksR) / dt;
+    // Calculate RPM for each motor
+    float rpmL = ((currentTicksL - lastTicksL) / dt) * 60.0 / TICKS_PER_WHEEL_REV;
+    float rpmR = ((currentTicksR - lastTicksR) / dt) * 60.0 / TICKS_PER_WHEEL_REV;
 
-    // Calculate average actual speed
-    float actualSpeedAvg = (actualSpeedL + actualSpeedR) / 2.0;
-
-    // PID control for both motors using average speed as reference
-    float err = targetTicks - actualSpeedAvg;
-    
-    // Left motor PID
-    float errL = targetTicks - actualSpeedL;
-    integralL += errL * dt;
-    integralL = constrain(integralL, -100, 100);
-    float dErrL = (errL - lastErrL) / dt;
-    float pwmLout = Kp * errL + Ki * integralL + Kd * dErrL;
-    pwmLout = constrain(pwmLout, -255, 255);
-    lastErrL = errL;
-
-    // Right motor PID
-    float errR = targetTicks - actualSpeedR;
-    integralR += errR * dt;
-    integralR = constrain(integralR, -100, 100);
-    float dErrR = (errR - lastErrR) / dt;
-    float pwmRout = Kp * errR + Ki * integralR + Kd * dErrR;
-    pwmRout = constrain(pwmRout, -255, 255);
-    lastErrR = errR;
-
-    // Synchronization logic: If one wheel is significantly slower, reduce both speeds
-    float rpmL = ticksPerSecToRPM(actualSpeedL);
-    float rpmR = ticksPerSecToRPM(actualSpeedR);
-    float rpmDiff = abs(rpmL - rpmR);
-    
-    if (rpmDiff > maxDeviation) {
-      // Slow down the faster motor to match the slower one
-      if (rpmL > rpmR) {
-        pwmLout = max(pwmLout - 20, pwmRout);
-      } else {
-        pwmRout = max(pwmRout - 20, pwmLout);
-      }
-      Serial.print("SYNC: ");
-    }
-
-    // Apply motor outputs
-    setMotor(pwmL, dirL, pwmLout, 0);
-    setMotor(pwmR, dirR, pwmRout, 1);
-
-    // Update for next iteration
     lastTicksL = currentTicksL;
     lastTicksR = currentTicksR;
     lastPidTime = now;
 
+    // Calculate error between motors (left RPM minus right RPM)
+    float errorSync = rpmL - rpmR;
+
+    integralSync += errorSync * dt;
+    integralSync = constrain(integralSync, -100, 100);
+    float dErrorSync = (errorSync - lastErrorSync) / dt;
+
+    float correctionPWM = Kp_sync * errorSync + Ki_sync * integralSync + Kd_sync * dErrorSync;
+    lastErrorSync = errorSync;
+
+    // Calculate base PWM values per motor based on command
+    float pwmL_base = 0, pwmR_base = 0;
+    switch (command) {
+      case 'f': // forward both motors
+        pwmL_base = basePWM;
+        pwmR_base = basePWM;
+        break;
+      case 'b': // backward both motors
+        pwmL_base = -basePWM;
+        pwmR_base = -basePWM;
+        break;
+      case 'r': // right turn: left forward, right backward
+        pwmL_base = basePWM;
+        pwmR_base = -basePWM;
+        break;
+      case 'l': // left turn: left backward, right forward
+        pwmL_base = -basePWM;
+        pwmR_base = basePWM;
+        break;
+      case 's': // stop
+      default:
+        pwmL_base = 0;
+        pwmR_base = 0;
+        break;
+    }
+
+    // Apply PID correction only to left motor PWM to sync speeds
+    float pwmL_out = constrain(pwmL_base - correctionPWM, -4095, 4095);
+    float pwmR_out = constrain(pwmR_base, -4095, 4095);
+
+    // Set motor speeds
+    setMotor(pwmL, dirL, pwmL_out, 0);
+    setMotor(pwmR, dirR, pwmR_out, 1);
     // Calculate rotations
     float rotL = currentTicksL / (float)TICKS_PER_WHEEL_REV;
     float rotR = currentTicksR / (float)TICKS_PER_WHEEL_REV;
 
-    // Enhanced output
-    Serial.printf("L: %5.1f RPM (%5.1f%%) | R: %5.1f RPM (%5.1f%%) | PWM: %4.0f,%4.0f | T: %5.1f RPM\n",
-                  rpmL, (rpmL/desiredRPM)*100,
-                  rpmR, (rpmR/desiredRPM)*100,
-                  pwmLout, pwmRout,
-                  ticksPerSecToRPM(targetTicks));
+    // Debug output
+    Serial.printf("L: %5.1f RPM | R: %5.1f RPM | PWM: L=%4.0f, R=%4.0f | Rot: L=%.2f, R=%.2f\n",
+                  rpmL, rpmR, pwmL_out, pwmR_out, rotL, rotR);
+
+    // Print synchronization status
+    // Serial.printf("Cmd:%c Speed:%d L_RPM:%.1f R_RPM:%.1f Corr:%.1f PWM_L:%.0f PWM_R:%.0f\n",
+    //               command, (int)basePWM, rpmL, rpmR, correctionPWM, pwmL_out, pwmR_out);
   }
 }
+
+
+
+// #include <Arduino.h>
+// #include <esp32-hal.h>
+// #include <esp32-hal-gpio.h>
+// #include <esp32-hal-ledc.h>
+
+// // Motor Pins
+// const int pwmL = 11;
+// const int dirL = 12;
+// const int encAL = 14;
+// const int encBL = 13;
+
+// const int pwmR = 41;
+// const int dirR = 42;
+// const int encAR = 1;
+// const int encBR = 2;
+
+// // Encoder counts
+// volatile long ticksL = 0;
+// volatile long ticksR = 0;
+
+// // PID constants
+// const float Kp = 1.2;    // Slightly increased for better response
+// const float Ki = 0.08;   // Increased integral for better tracking
+// const float Kd = 0.03;   // Slightly increased derivative
+
+// // Encoder & motor specs
+// const int CPR = 64;
+// const int GEAR_RATIO = 150;
+// const int TICKS_PER_WHEEL_REV = CPR * GEAR_RATIO; // 9600
+
+// // Control interval
+// const unsigned long PID_INTERVAL = 50;
+
+// // PID state
+// float integralL = 0, integralR = 0;
+// float lastErrL = 0, lastErrR = 0;
+// long lastTicksL = 0, lastTicksR = 0;
+// unsigned long lastPidTime = 0;
+
+// // Target speed in ticks/sec
+// float targetTicks = 0;  // Single target for both wheels
+
+// // Control variables
+// char command = 'f';
+// float desiredRPM = 50;
+
+// // Motor synchronization
+// float actualSpeedL = 0;
+// float actualSpeedR = 0;
+// float maxDeviation = 5.0;  // Max allowed speed difference (RPM)
+
+// // Encoder interrupts
+// void IRAM_ATTR handleEncL() {
+//   bool A = digitalRead(encAL);
+//   bool B = digitalRead(encBL);
+//   ticksL += (A == B) ? 1 : -1;
+// }
+
+// void IRAM_ATTR handleEncR() {
+//   bool A = digitalRead(encAR);
+//   bool B = digitalRead(encBR);
+//   ticksR += (A == B) ? -1 : 1;  // Inverted to fix direction issue
+// }
+
+// // Set motor PWM and direction
+// void setMotor(int pwmPin, int dirPin, float pwmVal, int channel) {
+//   pwmVal = constrain(pwmVal, -255, 255);
+//   if (pwmVal >= 0) {
+//     digitalWrite(dirPin, HIGH);
+//     ledcWrite(channel, (int)pwmVal);
+//   } else {
+//     digitalWrite(dirPin, LOW);
+//     ledcWrite(channel, (int)(-pwmVal));
+//   }
+// }
+
+// // Convert RPM to ticks per second
+// float rpmToTicksPerSec(float rpm) {
+//   return (rpm * TICKS_PER_WHEEL_REV) / 60.0;
+// }
+
+// // Convert ticks per second to output shaft RPM
+// float ticksPerSecToRPM(float ticksPerSec) {
+//   return (ticksPerSec * 60.0) / TICKS_PER_WHEEL_REV;
+// }
+
+// void setup() {
+//   Serial.begin(115200);
+
+//   // Motor pins
+//   pinMode(pwmL, OUTPUT);
+//   pinMode(dirL, OUTPUT);
+//   pinMode(pwmR, OUTPUT);
+//   pinMode(dirR, OUTPUT);
+
+//   // Setup PWM channels
+//   ledcSetup(0, 5000, 8);
+//   ledcSetup(1, 5000, 8);
+//   ledcAttachPin(pwmL, 0);
+//   ledcAttachPin(pwmR, 1);
+
+//   // Encoder pins
+//   pinMode(encAL, INPUT_PULLUP);
+//   pinMode(encBL, INPUT_PULLUP);
+//   pinMode(encAR, INPUT_PULLUP);
+//   pinMode(encBR, INPUT_PULLUP);
+
+//   // Interrupt setup
+//   attachInterrupt(digitalPinToInterrupt(encAL), handleEncL, CHANGE);
+//   attachInterrupt(digitalPinToInterrupt(encAR), handleEncR, CHANGE);
+
+//   lastPidTime = millis();
+  
+//   Serial.println("Coordinated Motor Control Ready");
+//   Serial.println("Commands: 'f'=forward, 'b'=backward, 's'=stop, '+'=inc RPM, '-'=dec RPM");
+//   Serial.printf("Initial Target RPM: %.1f\n", desiredRPM);
+// }
+
+// void loop() {
+//   // Handle serial commands
+//   if (Serial.available()) {
+//     char newCommand = Serial.read();
+    
+//     if (newCommand == 'f' || newCommand == 'b' || newCommand == 's') {
+//       command = newCommand;
+//       Serial.printf("Command: %c\n", command);
+      
+//       // Reset PID state when changing commands
+//       integralL = 0;
+//       integralR = 0;
+//       lastErrL = 0;
+//       lastErrR = 0;
+//     }
+//     else if (newCommand == '+') {
+//       desiredRPM += 5.0;
+//       Serial.printf("RPM+: %.1f\n", desiredRPM);
+//     }
+//     else if (newCommand == '-') {
+//       // Fixed: Use conditional instead of max() with mismatched types
+//       desiredRPM -= 5.0;
+//       if (desiredRPM < 0) desiredRPM = 0;
+//       Serial.printf("RPM-: %.1f\n", desiredRPM);
+//     }
+//   }
+
+//   // Set target speed based on command
+//   switch (command) {
+//     case 'f': // Forward
+//       targetTicks = rpmToTicksPerSec(desiredRPM);
+//       break;
+//     case 'b': // Backward
+//       targetTicks = -rpmToTicksPerSec(desiredRPM);
+//       break;
+//     case 's': // Stop
+//     default:
+//       targetTicks = 0;
+//       break;
+//   }
+
+//   // Run PID control at fixed interval
+//   unsigned long now = millis();
+//   if (now - lastPidTime >= PID_INTERVAL) {
+//     float dt = (now - lastPidTime) / 1000.0;
+
+//     // Get current encoder counts
+//     long currentTicksL = ticksL;
+//     long currentTicksR = ticksR;
+
+//     // Calculate actual speeds (ticks per second)
+//     actualSpeedL = (currentTicksL - lastTicksL) / dt;
+//     actualSpeedR = (currentTicksR - lastTicksR) / dt;
+
+//     // Calculate average actual speed
+//     float actualSpeedAvg = (actualSpeedL + actualSpeedR) / 2.0;
+
+//     // PID control for both motors using average speed as reference
+//     float err = targetTicks - actualSpeedAvg;
+    
+//     // Left motor PID
+//     float errL = targetTicks - actualSpeedL;
+//     integralL += errL * dt;
+//     integralL = constrain(integralL, -100, 100);
+//     float dErrL = (errL - lastErrL) / dt;
+//     float pwmLout = Kp * errL + Ki * integralL + Kd * dErrL;
+//     pwmLout = constrain(pwmLout, -255, 255);
+//     lastErrL = errL;
+
+//     // Right motor PID
+//     float errR = targetTicks - actualSpeedR;
+//     integralR += errR * dt;
+//     integralR = constrain(integralR, -100, 100);
+//     float dErrR = (errR - lastErrR) / dt;
+//     float pwmRout = Kp * errR + Ki * integralR + Kd * dErrR;
+//     pwmRout = constrain(pwmRout, -255, 255);
+//     lastErrR = errR;
+
+//     // Synchronization logic: If one wheel is significantly slower, reduce both speeds
+//     float rpmL = ticksPerSecToRPM(actualSpeedL);
+//     float rpmR = ticksPerSecToRPM(actualSpeedR);
+//     float rpmDiff = abs(rpmL - rpmR);
+    
+//     if (rpmDiff > maxDeviation) {
+//       // Slow down the faster motor to match the slower one
+//       if (rpmL > rpmR) {
+//         pwmLout = max(pwmLout - 20, pwmRout);
+//       } else {
+//         pwmRout = max(pwmRout - 20, pwmLout);
+//       }
+//       Serial.print("SYNC: ");
+//     }
+
+//     // Apply motor outputs
+//     setMotor(pwmL, dirL, pwmLout, 0);
+//     setMotor(pwmR, dirR, pwmRout, 1);
+
+//     // Update for next iteration
+//     lastTicksL = currentTicksL;
+//     lastTicksR = currentTicksR;
+//     lastPidTime = now;
+
+//     // Calculate rotations
+//     float rotL = currentTicksL / (float)TICKS_PER_WHEEL_REV;
+//     float rotR = currentTicksR / (float)TICKS_PER_WHEEL_REV;
+
+//     // Enhanced output
+//     Serial.printf("L: %5.1f RPM (%5.1f%%) | R: %5.1f RPM (%5.1f%%) | PWM: %4.0f,%4.0f | T: %5.1f RPM\n",
+//                   rpmL, (rpmL/desiredRPM)*100,
+//                   rpmR, (rpmR/desiredRPM)*100,
+//                   pwmLout, pwmRout,
+//                   ticksPerSecToRPM(targetTicks));
+//   }
+// }
 
 // #include <Arduino.h>
 // #include <esp32-hal.h>
