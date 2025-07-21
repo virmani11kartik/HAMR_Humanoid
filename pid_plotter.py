@@ -147,6 +147,60 @@ try:
 except KeyboardInterrupt:
     print("Plotting stopped by user")
 
+# import serial
+# import time
+# import matplotlib.pyplot as plt
+# import re
+
+# # Initialize serial port
+# ser = serial.Serial('COM7', 115200, timeout=1)
+# time.sleep(2)
+
+# # Data buffers
+# pwms = []
+# rpms = []
+
+# # Regex pattern to extract PWM and RPM
+# pattern = re.compile(r"PWM:\s*(\d+)\s*\|\s*RPM:\s*(-?\d+\.?\d*)")
+
+# # Setup interactive plot
+# plt.ion()
+# fig, ax = plt.subplots()
+# ax.set_title('Real-Time PWM vs RPM')
+# ax.set_xlabel('PWM (0–4095)')
+# ax.set_ylabel('RPM')
+# ax.grid(True)
+
+# # Keep track of line segments
+# line_segments = []
+
+# try:
+#     print("Reading and plotting live... Press Ctrl+C to stop.\n")
+
+#     while True:
+#         line = ser.readline().decode(errors='ignore').strip()
+#         match = pattern.search(line)
+
+#         if match:
+#             pwm = int(match.group(1))
+#             rpm = float(match.group(2))
+
+#             if len(pwms) > 0:
+#                 color = 'blue' if pwm > pwms[-1] else 'red'
+#                 ax.plot([pwms[-1], pwm], [rpms[-1], rpm], color=color)
+#                 plt.pause(0.01)
+
+#             pwms.append(pwm)
+#             rpms.append(rpm)
+
+# except KeyboardInterrupt:
+#     print("\nFinished. Saving plot...")
+#     plt.ioff()
+#     plt.savefig('pwm_vs_rpm_live.png')
+#     plt.show()
+
+
+
 
 # import serial
 # import matplotlib.pyplot as plt
