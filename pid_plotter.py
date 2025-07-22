@@ -25,7 +25,7 @@ else:
     nrows, ncols = 4, 4  # fallback for 4 or more plots
 
 # Open serial port - update COM port as needed
-ser = serial.Serial('COM7', 115200, timeout=1)
+ser = serial.Serial('COM4', 115200, timeout=1)
 time.sleep(2)
 
 # Data buffers
