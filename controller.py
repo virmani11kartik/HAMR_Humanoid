@@ -9,7 +9,7 @@ import time
 
 
 # === Update with the ESP32's IP printed on Serial Monitor ===
-ESP32_IP = "192.168.1.42"  # Replace with your ESP32 IP
+ESP32_IP = "192.168.4.1"  # Replace with your ESP32 IP
 ESP32_PORT = 12345
 
 sock= socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -59,7 +59,7 @@ try:
         sock.sendto(msg.encode(), (ESP32_IP, ESP32_PORT))
 
         # Print what you send
-        # print("Sent:", msg)
+        print("Sent:", msg)
 
         # Read from ESP32 
         # while ser.in_waiting > 0:
