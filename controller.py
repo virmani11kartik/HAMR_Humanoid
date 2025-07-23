@@ -1,10 +1,18 @@
 import pygame
+import socket
 import serial
 import time
 
-# Change COM to your ESP32 port
-ser = serial.Serial('COM4', 115200, timeout=0.1)
-time.sleep(2)  # wait for ESP to reset
+# # Change COM to your ESP32 port
+# ser = serial.Serial('COM4', 115200, timeout=0.1)
+# time.sleep(2)  # wait for ESP to reset
+
+
+# === Update with the ESP32's IP printed on Serial Monitor ===
+ESP32_IP = "192.168.1.42"  # Replace with your ESP32 IP
+ESP32_PORT = 12345
+
+sock= socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 pygame.init()
 pygame.joystick.init()
@@ -47,20 +55,24 @@ try:
         )
 
         # Send controller data to ESP32
-        ser.write((msg + '\n').encode())
+        # ser.write((msg + '\n').encode())
+        sock.sendto(msg.encode(), (ESP32_IP, ESP32_PORT))
 
         # Print what you send
         # print("Sent:", msg)
 
         # Read from ESP32 
-        while ser.in_waiting > 0:
-            response = ser.readline().decode(errors='ignore').strip()
-            if response:
-                print(response)
+        # while ser.in_waiting > 0:
+        #     response = ser.readline().decode(errors='ignore').strip()
+        #     if response:
+        #         print(response)
 
         time.sleep(0.05)
 
 except KeyboardInterrupt:
     print("\nExiting...")
-    ser.close()
+    # ser.close()
     pygame.quit()
+    sock.close()
+
+

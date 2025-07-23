@@ -1,7 +1,7 @@
-// #include <Arduino.h>
-// #include <esp32-hal.h>
-// #include <esp32-hal-gpio.h>
-// #include <esp32-hal-ledc.h>
+#include <Arduino.h>
+#include <esp32-hal.h>
+#include <esp32-hal-gpio.h>
+#include <esp32-hal-ledc.h>
 
 float lx, ly, rx, ry, lt, rt;
 int a, b, x, y;
@@ -53,75 +53,75 @@ void loop() {
   }
 }
 
+// STATION MODE
 
-#include <Arduino.h>
-#include <USB.h>
-#include <USBHIDGamepad.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 
-USBHIDGamepad Gamepad;
+// ==== YOUR WIFI CREDENTIALS ====
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// ==== UDP SETUP ====
+WiFiUDP udp;
+const int port = 12345;
+char incoming[150];  // enough to hold controller data
+
+// ==== Controller Values ====
+float lx, ly, rx, ry, lt, rt;
+int a, b, x, y;
 
 void setup() {
   Serial.begin(115200);
-  USB.begin();
-  Serial.println("ESP32 OTG Gamepad Reader Ready");
-}
+  WiFi.begin(ssid, password);
 
-void loop() {
-  if (Gamepad.connected()) {
-    // Read axes
-    float lx = Gamepad.getAxis(0) / 32767.0;  // Left X
-    float ly = Gamepad.getAxis(1) / 32767.0;  // Left Y
-    float rx = Gamepad.getAxis(2) / 32767.0;  // Right X
-    float ry = Gamepad.getAxis(3) / 32767.0;  // Right Y
-    float lt = Gamepad.getAxis(4) / 32767.0;  // Left Trigger
-    float rt = Gamepad.getAxis(5) / 32767.0;  // Right Trigger
-
-    // Read buttons
-    int a = Gamepad.getButton(0);  // A button
-    int b = Gamepad.getButton(1);  // B button
-    int x = Gamepad.getButton(2);  // X button
-    int y = Gamepad.getButton(3);  // Y button
-
-    Serial.printf("ESP: LX: %.2f LY: %.2f RX: %.2f RY: %.2f LT: %.2f RT: %.2f A:%d B:%d X:%d Y:%d\n",
-                  lx, ly, rx, ry, lt, rt, a, b, x, y);
-    delay(50);  // Limit refresh rate
-  } else {
-    Serial.println("Waiting for gamepad connection...");
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    Serial.print(".");
   }
-}
 
-#include <Arduino.h>
-#include "USB.h"
-#include "USBHIDHost.h"
+  Serial.println("\nWiFi connected!");
+  Serial.print("ESP IP: ");
+  Serial.println(WiFi.localIP());
 
-USBHIDHost hid;
-USBHIDInputJoystick* joystick = nullptr;
-
-void setup() {
-  Serial.begin(115200);
-  USB.begin();
-  Serial.println("ESP32-S2 USB Host Initialized");
+  udp.begin(port);
+  Serial.printf("Listening for UDP on port %d\n", port);
 }
 
 void loop() {
-  USBHIDInputJoystick* newJoy = hid.getJoystick();
-  if (newJoy && newJoy != joystick) {
-    joystick = newJoy;
-    Serial.println("Gamepad connected!");
-  }
+  int len = udp.parsePacket();
+  if (len > 0) {
+    udp.read(incoming, sizeof(incoming));
+    incoming[len] = '\0';  // null-terminate
 
-  if (joystick) {
-    int16_t lx = joystick->axisX();
-    int16_t ly = joystick->axisY();
-    int16_t rx = joystick->axisZ();
-    int16_t ry = joystick->rz();
+    String msg = String(incoming);
 
-    uint16_t buttons = joystick->buttons();
+    // Parsing logic reused from your original code
+    int lxIndex = msg.indexOf("LX:");
+    int lyIndex = msg.indexOf("LY:");
+    int rxIndex = msg.indexOf("RX:");
+    int ryIndex = msg.indexOf("RY:");
+    int ltIndex = msg.indexOf("LT:");
+    int rtIndex = msg.indexOf("RT:");
+    int aIndex  = msg.indexOf("A:");
+    int bIndex  = msg.indexOf("B:");
+    int xIndex  = msg.indexOf("X:");
+    int yIndex  = msg.indexOf("Y:");
 
-    Serial.printf("LX: %d  LY: %d  RX: %d  RY: %d  Buttons: 0x%04X\n", lx, ly, rx, ry, buttons);
-    delay(50);
-  } else {
-    delay(100);
+    if (lxIndex == -1 || lyIndex == -1 || rxIndex == -1 || ryIndex == -1 ||
+        ltIndex == -1 || rtIndex == -1 || aIndex == -1 || bIndex == -1 ||
+        xIndex == -1 || yIndex == -1) {
+      Serial.println("ESP: Parsing error!");
+      return;
+    }
+
+    ly = msg.substring(lyIndex + 3, rxIndex).toFloat();
+    rx = msg.substring(rxIndex + 3, ryIndex).toFloat();
+    lt = msg.substring(ltIndex + 3, rtIndex).toFloat();
+    rt = msg.substring(rtIndex + 3, aIndex).toFloat();
+    a = msg.substring(aIndex + 2, bIndex).toInt();
+
+    Serial.printf("ESP: LY: %.2f RX: %.2f LT: %.2f RT: %.2f A: %d\n", ly, rx, lt, rt, a);
   }
 }
