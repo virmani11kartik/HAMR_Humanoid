@@ -5,6 +5,8 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 
+
+// STATION_MODE
 // WIFI CREDENTIALS
 const char* ssid = "UNIT213";
 const char* password = "Philly4234";

@@ -12,7 +12,7 @@ const char* password = "123571113";
 // UDP SETUP
 WiFiUDP udp;
 const int port = 12345;  // Port to listen on
-char incoming[150];  // Buffer for incoming data
+char incoming[255];  // Buffer for incoming data
 
 
 float lx, ly, rx, ry, lt, rt;
@@ -21,15 +21,23 @@ int a, b, x, y;
 void setup() {
   Serial.begin(115200);
   Serial.println("ESP32 Ready");
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nWiFi connected!");
+
+  WiFi.softAP(ssid, password);
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.print("ESP IP: ");
+  
+
+  // Connect to WiFi
+  // WiFi.begin(ssid, password);
+  // Serial.print("Connecting to WiFi");
+  // while (WiFi.status() != WL_CONNECTED) {
+  //   delay(500);
+  //   Serial.print(".");
+  // }
+  // Serial.println("\nWiFi connected!");
   Serial.print("ESP IP: "); 
-  Serial.println(WiFi.localIP());
+  // Serial.println(WiFi.localIP());
+  Serial.println(myIP);
   udp.begin(port);
   Serial.printf("Listening for UDP on port %d\n", port);
 }
@@ -42,7 +50,7 @@ void loop() {
   if (len > 0) {
     udp.read(incoming, sizeof(incoming));
     incoming[len] = '\0';  // null-terminate
-    Serial.printf("Received: %s\n", incoming);
+    // Serial.printf("Received: %s\n", incoming);
     String msg = String(incoming); 
     
 
