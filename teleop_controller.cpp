@@ -2,6 +2,18 @@
 #include <esp32-hal.h>
 #include <esp32-hal-gpio.h>
 #include <esp32-hal-ledc.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+// WIFI CREDENTIALS
+const char* ssid = "UNIT213";
+const char* password = "Philly4234";
+
+// UDP SETUP
+WiFiUDP udp;
+const int port = 12345;  // Port to listen on
+char incoming[150];  // Buffer for incoming data
+
 
 float lx, ly, rx, ry, lt, rt;
 int a, b, x, y;
@@ -9,11 +21,30 @@ int a, b, x, y;
 void setup() {
   Serial.begin(115200);
   Serial.println("ESP32 Ready");
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+  Serial.print("ESP IP: "); 
+  Serial.println(WiFi.localIP());
+  udp.begin(port);
+  Serial.printf("Listening for UDP on port %d\n", port);
 }
 
 void loop() {
-  if (Serial.available()) {
-    String msg = Serial.readStringUntil('\n');
+  // if (Serial.available()) {
+  //   String msg = Serial.readStringUntil('\n');
+
+  int len = udp.parsePacket();
+  if (len > 0) {
+    udp.read(incoming, sizeof(incoming));
+    incoming[len] = '\0';  // null-terminate
+    Serial.printf("Received: %s\n", incoming);
+    String msg = String(incoming); 
+    
 
     // Basic parsing example — you might want to improve parsing robustness
     int lxIndex = msg.indexOf("LX:");
@@ -50,78 +81,5 @@ void loop() {
 
     // Serial.printf("ESP: LX: %.2f LY: %.2f RX: %.2f RY: %.2f LT: %.2f RT: %.2f A: %d B: %d X: %d Y: %d\n",
     //               lx, ly, rx, ry, lt, rt, a, b, x, y);
-  }
-}
-
-// STATION MODE
-
-#include <WiFi.h>
-#include <WiFiUdp.h>
-
-// ==== YOUR WIFI CREDENTIALS ====
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-
-// ==== UDP SETUP ====
-WiFiUDP udp;
-const int port = 12345;
-char incoming[150];  // enough to hold controller data
-
-// ==== Controller Values ====
-float lx, ly, rx, ry, lt, rt;
-int a, b, x, y;
-
-void setup() {
-  Serial.begin(115200);
-  WiFi.begin(ssid, password);
-
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("\nWiFi connected!");
-  Serial.print("ESP IP: ");
-  Serial.println(WiFi.localIP());
-
-  udp.begin(port);
-  Serial.printf("Listening for UDP on port %d\n", port);
-}
-
-void loop() {
-  int len = udp.parsePacket();
-  if (len > 0) {
-    udp.read(incoming, sizeof(incoming));
-    incoming[len] = '\0';  // null-terminate
-
-    String msg = String(incoming);
-
-    // Parsing logic reused from your original code
-    int lxIndex = msg.indexOf("LX:");
-    int lyIndex = msg.indexOf("LY:");
-    int rxIndex = msg.indexOf("RX:");
-    int ryIndex = msg.indexOf("RY:");
-    int ltIndex = msg.indexOf("LT:");
-    int rtIndex = msg.indexOf("RT:");
-    int aIndex  = msg.indexOf("A:");
-    int bIndex  = msg.indexOf("B:");
-    int xIndex  = msg.indexOf("X:");
-    int yIndex  = msg.indexOf("Y:");
-
-    if (lxIndex == -1 || lyIndex == -1 || rxIndex == -1 || ryIndex == -1 ||
-        ltIndex == -1 || rtIndex == -1 || aIndex == -1 || bIndex == -1 ||
-        xIndex == -1 || yIndex == -1) {
-      Serial.println("ESP: Parsing error!");
-      return;
-    }
-
-    ly = msg.substring(lyIndex + 3, rxIndex).toFloat();
-    rx = msg.substring(rxIndex + 3, ryIndex).toFloat();
-    lt = msg.substring(ltIndex + 3, rtIndex).toFloat();
-    rt = msg.substring(rtIndex + 3, aIndex).toFloat();
-    a = msg.substring(aIndex + 2, bIndex).toInt();
-
-    Serial.printf("ESP: LY: %.2f RX: %.2f LT: %.2f RT: %.2f A: %d\n", ly, rx, lt, rt, a);
   }
 }
