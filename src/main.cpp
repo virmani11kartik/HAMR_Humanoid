@@ -9,6 +9,10 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <WebServer.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include "odometry.h"
 
 // void setup() {
 //   pinMode(LED_BUILTIN, OUTPUT);
@@ -23,8 +27,8 @@
 //   delay(1000);
 // }
 
-// // float lx, ly, rx, ry, lt, rt;
-int a, b, x, y;
+// // // float lx, ly, rx, ry, lt, rt;
+// int a, b, x, y;
 
 // const char* webpage = R"rawliteral(
 // <!DOCTYPE html>
@@ -332,6 +336,10 @@ float joyY = 0.0f;  // Joystick Y-axis
 float joyturretX = 0.0f;  // Turret joystick X-axis
 float joyturretY = 0.0f;  // Turret joystick Y-axis
 
+// Odometry timing
+unsigned long lastOdometryTime = 0;
+const unsigned long ODOMETRY_INTERVAL = 100; // Odometry update interval in ms
+
 // Current command
 // char command = 'f'; // start forward
 
@@ -371,6 +379,7 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println("ESP32 Ready");
+  initOdometry(); // Initialize odometry
   WiFi.softAP(ssid, password, 5, 0, 2);
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("ESP IP: ");
@@ -672,9 +681,12 @@ void loop() {
     Serial.printf("L: %5.1f RPM | R: %5.1f RPM | Error_Turret: %5.1f  | PWM: L=%d, R=%d, T=%d | Rot: L=%.2f, R=%.2f, T_angle=%.2f\n", 
               rpmL, rpmR, errorT, (int)pwmL_out, (int)pwmR_out, (int)pwmT_out, rotL, rotR, currentAngleT);
 
-    // Print synchronization status
-    // Serial.printf("Cmd:%c Speed:%d L_RPM:%.1f R_RPM:%.1f Corr:%.1f PWM_L:%.0f PWM_R:%.0f\n",
-    //               command, (int)basePWM, rpmL, rpmR, correctionPWM, pwmL_out, pwmR_out);
+  }
+  if(now- lastOdometryTime >= ODOMETRY_INTERVAL) {
+    // Update odometry every ODOMETRY_INTERVAL ms
+    updateOdometry();
+    printPose(); // Print the robot pose
+    lastOdometryTime = now;
   }
 }
 
