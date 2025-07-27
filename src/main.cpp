@@ -9,6 +9,10 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <WebServer.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include "odometry.h"
 
 // void setup() {
 //   pinMode(LED_BUILTIN, OUTPUT);
@@ -23,168 +27,300 @@
 //   delay(1000);
 // }
 
-// // float lx, ly, rx, ry, lt, rt;
+// // // float lx, ly, rx, ry, lt, rt;
 int a, b, x, y;
-
-// const char* webpage = R"rawliteral(
-// <!DOCTYPE html>
-// <html>
-// <head>
-//   <meta name="viewport" content="width=device-width, initial-scale=1">
-//   <title>HAMR Joystick</title>
-//   <style>
-//     body { font-family: sans-serif; text-align: center; background: #f0f0f0; }
-//     #joystickZone { width: 200px; height: 200px; margin: auto; margin-top: 50px; background: #ccc; border-radius: 50%; position: relative; touch-action: none; }
-//     #stick { width: 50px; height: 50px; background: #555; border-radius: 50%; position: absolute; top: 75px; left: 75px; }
-//   </style>
-// </head>
-// <body>
-//   <h2>HAMR Virtual Joystick</h2>
-//   <div id="joystickZone">
-//     <div id="stick"></div>
-//   </div>
-//   <script>
-//     const stick = document.getElementById('stick');
-//     const zone = document.getElementById('joystickZone');
-
-//     let dragging = false;
-
-//     zone.addEventListener('touchstart', startDrag);
-//     zone.addEventListener('touchmove', drag);
-//     zone.addEventListener('touchend', endDrag);
-//     zone.addEventListener('mousedown', startDrag);
-//     zone.addEventListener('mousemove', drag);
-//     zone.addEventListener('mouseup', endDrag);
-
-//     function startDrag(e) {
-//       dragging = true;
-//     }
-
-//     function drag(e) {
-//       if (!dragging) return;
-//       e.preventDefault();
-
-//       let x = (e.touches ? e.touches[0].clientX : e.clientX) - zone.getBoundingClientRect().left;
-//       let y = (e.touches ? e.touches[0].clientY : e.clientY) - zone.getBoundingClientRect().top;
-
-//       let dx = x - 100;
-//       let dy = y - 100;
-
-//       let dist = Math.min(Math.sqrt(dx*dx + dy*dy), 75);
-//       let angle = Math.atan2(dy, dx);
-
-//       let stickX = Math.cos(angle) * dist + 75;
-//       let stickY = Math.sin(angle) * dist + 75;
-
-//       stick.style.left = stickX + 'px';
-//       stick.style.top = stickY + 'px';
-
-//       // Normalize and send
-//       let normX = ((stickX - 75) / 75).toFixed(2);
-//       let normY = ((stickY - 75) / 75).toFixed(2);
-
-//       fetch(`/move?x=${normX}&y=${normY}`);
-//     }
-
-//     function endDrag() {
-//       dragging = false;
-//       stick.style.left = '75px';
-//       stick.style.top = '75px';
-//       fetch(`/move?x=0&y=0`);
-//     }
-//   </script>
-// </body>
-// </html>
-// )rawliteral";
 
 const char* webpage = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HAMR Joystick</title>
+  <title>HAMR</title>
   <style>
     body {
-      font-family: sans-serif;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       text-align: center;
-      background: #f0f0f0;
+      background: linear-gradient(135deg, #32459bff 0%, #764ba2 100%);
       margin: 0;
-      padding: 0;
+      padding: 20px;
+      color: white;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 500px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
+      padding: 30px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.2);
     }
 
     h2 {
-      margin-top: 20px;
+      margin-top: 0;
+      margin-bottom: 30px;
+      font-size: 2.2em;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
     }
 
     #joystickZone {
       width: 200px;
       height: 200px;
       margin: 20px auto;
-      background: #ccc;
+      background: linear-gradient(145deg, #e0e0e0, #c0c0c0);
       border-radius: 50%;
       position: relative;
       touch-action: none;
+      box-shadow: inset 8px 8px 16px rgba(0, 0, 0, 0.2),
+                  inset -8px -8px 16px rgba(255, 255, 255, 0.7);
     }
 
     #stick {
       width: 50px;
       height: 50px;
-      background: #555;
+      background: linear-gradient(145deg, #555, #333);
       border-radius: 50%;
       position: absolute;
       top: 75px;
       left: 75px;
+      cursor: pointer;
+      transition: all 0.1s ease;
+      box-shadow: 4px 4px 8px rgba(0, 0, 0, 0.3),
+                  -2px -2px 4px rgba(255, 255, 255, 0.1);
     }
 
-    .controls {
-      margin-top: 30px;
+    #stick:hover {
+      transform: scale(1.1);
+    }
+
+    .control-group {
+      margin: 25px 0;
+      padding: 20px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 15px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .control-group h3 {
+      margin: 0 0 15px 0;
+      font-size: 1.3em;
+      color: #fff;
+    }
+
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      justify-content: center;
+      margin: 15px 0;
+    }
+
+    .slider {
+      -webkit-appearance: none;
+      width: 200px;
+      height: 8px;
+      border-radius: 4px;
+      background: linear-gradient(90deg, #ff6b6b 0%, #4ecdc4 50%, #45b7d1 100%);
+      outline: none;
+      position: relative;
+    }
+
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #fff, #ddd);
+      cursor: pointer;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .slider::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+      box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .slider::-moz-range-thumb {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #fff, #ddd);
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .slider-labels {
+      display: flex;
+      justify-content: space-between;
+      width: 200px;
+      margin: 10px auto 0;
+      font-size: 0.9em;
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .slider-value {
+      min-width: 60px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 1.1em;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      margin-top: 10px;
     }
 
     button {
-      padding: 10px 20px;
+      padding: 12px 24px;
       font-size: 16px;
       margin: 10px;
-      background: #007bff;
+      background: linear-gradient(145deg, #4ecdc4, #44a08d);
       color: white;
       border: none;
-      border-radius: 5px;
+      border-radius: 25px;
       cursor: pointer;
+      transition: all 0.3s ease;
+      font-weight: 600;
+      box-shadow: 0 4px 15px rgba(68, 160, 141, 0.3);
     }
 
     button:hover {
-      background: #0056b3;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(68, 160, 141, 0.4);
+      background: linear-gradient(145deg, #5dd4cc, #4ecdc4);
+    }
+
+    button:active {
+      transform: translateY(0);
     }
 
     input[type="number"] {
-      width: 80px;
-      padding: 5px;
+      width: 100px;
+      padding: 12px;
       font-size: 16px;
       margin-right: 10px;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      text-align: center;
+    }
+
+    input[type="number"]::placeholder {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    input[type="number"]:focus {
+      outline: none;
+      border-color: #4ecdc4;
+      box-shadow: 0 0 10px rgba(78, 205, 196, 0.3);
+    }
+
+    .status-indicator {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #4ecdc4;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+
+    .info-panel {
+      margin-top: 20px;
+      padding: 15px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 10px;
+      font-family: monospace;
+      font-size: 0.9em;
+      text-align: left;
+    }
+
+    .trigger-control {
+      width: 100%;
+      max-width: 300px;
+      margin: 0 auto;
+    }
+
+    .trigger-end-label {
+      font-size: 1.1em;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.9);
+      min-width: 30px;
     }
   </style>
 </head>
 <body>
-  <h2>HAMR Virtual Joystick</h2>
+  <div class="container">
+    <h2>HAMR Robot Control <span class="status-indicator"></span></h2>
 
-  <div id="joystickZone">
-    <div id="stick"></div>
-  </div>
+    <div class="control-group">
+      <h3>Drive Control</h3>
+      <div id="joystickZone">
+        <div id="stick"></div>
+      </div>
+    </div>
 
-  <div class="controls">
-    <button onclick="sendTrigger('lt')">LT</button>
-    <button onclick="sendTrigger('rt')">RT</button>
-  </div>
+    <div class="control-group">
+      <h3>Turret Control</h3>
+      <div class="trigger-control">
+        <div class="slider-container">
+          <span class="trigger-end-label">LT</span>
+          <input type="range" id="turretSlider" class="slider" min="-100" max="100" value="0" step="1">
+          <span class="trigger-end-label">RT</span>
+        </div>
+        <div class="slider-labels">
+          <span>-100%</span>
+          <span>0%</span>
+          <span>+100%</span>
+        </div>
+        <div class="slider-value" id="turretValue">0%</div>
+      </div>
+    </div>
 
-  <div class="controls">
-    <input type="number" id="angleInput" placeholder="Angle" min="0" max="360">
-    <button onclick="sendTurretAngle()">Set Turret</button>
+    <div class="control-group">
+      <h3>Turret Position</h3>
+      <input type="number" id="angleInput" placeholder="Angle (0-360)" min="0" max="360" step="1">
+      <button onclick="sendTurretAngle()">Set Position</button>
+    </div>
+
+    <div class="control-group">
+      <button onclick="resetOdometry()">Reset Odometry</button>
+      <button onclick="getPose()">Get Pose</button>
+    </div>
+
+    <div class="info-panel" id="infoPanel">
+      Robot Status: Ready<br>
+      Position: X=0.000, Y=0.000, θ=0.0°<br>
+      LT: 0.00 | RT: 0.00<br>
+      Last Command: None
+    </div>
   </div>
 
   <script>
     const stick = document.getElementById('stick');
     const zone = document.getElementById('joystickZone');
+    const turretSlider = document.getElementById('turretSlider');
+    const turretValue = document.getElementById('turretValue');
+    const infoPanel = document.getElementById('infoPanel');
+    
     let dragging = false;
+    let currentTurretValue = 0;
 
+    // Joystick event listeners
     zone.addEventListener('touchstart', startDrag);
     zone.addEventListener('touchmove', drag);
     zone.addEventListener('touchend', endDrag);
@@ -193,48 +329,179 @@ const char* webpage = R"rawliteral(
     zone.addEventListener('mouseup', endDrag);
     zone.addEventListener('mouseleave', endDrag);
 
+    // Turret slider event listeners
+    turretSlider.addEventListener('input', function() {
+      currentTurretValue = parseInt(this.value);
+      turretValue.textContent = currentTurretValue + '%';
+      
+      if (currentTurretValue < 0) {
+        // Left side = LT trigger
+        const ltValue = Math.abs(currentTurretValue) / 100.0;
+        sendTrigger('lt', ltValue);
+      } else if (currentTurretValue > 0) {
+        // Right side = RT trigger  
+        const rtValue = currentTurretValue / 100.0;
+        sendTrigger('rt', rtValue);
+      } else {
+        // Center = stop
+        sendTrigger('stop', 0);
+      }
+      
+      updateInfoPanel();
+    });
+
+    // Auto-return to center when released
+    turretSlider.addEventListener('mouseup', returnToCenter);
+    turretSlider.addEventListener('touchend', returnToCenter);
+
+    function returnToCenter() {
+      setTimeout(() => {
+        if (!turretSlider.matches(':active')) {
+          turretSlider.value = 0;
+          currentTurretValue = 0;
+          turretValue.textContent = '0%';
+          sendTrigger('stop', 0);
+          updateInfoPanel();
+        }
+      }, 100);
+    }
+
     function startDrag(e) {
       dragging = true;
+      e.preventDefault();
     }
 
     function drag(e) {
       if (!dragging) return;
       e.preventDefault();
+      
       let x = (e.touches ? e.touches[0].clientX : e.clientX) - zone.getBoundingClientRect().left;
       let y = (e.touches ? e.touches[0].clientY : e.clientY) - zone.getBoundingClientRect().top;
+      
       let dx = x - 100;
       let dy = y - 100;
+      
       let dist = Math.min(Math.sqrt(dx * dx + dy * dy), 75);
       let angle = Math.atan2(dy, dx);
+      
       let stickX = Math.cos(angle) * dist + 75;
       let stickY = Math.sin(angle) * dist + 75;
+      
       stick.style.left = stickX + 'px';
       stick.style.top = stickY + 'px';
+      
       let normX = ((stickX - 75) / 75).toFixed(2);
       let normY = ((stickY - 75) / 75).toFixed(2);
-      fetch(`/move?x=${normX}&y=${normY}`);
+      
+      fetch(`/move?x=${normX}&y=${normY}`)
+        .then(response => response.text())
+        .then(data => {
+          updateInfoPanel(`Drive: X=${normX}, Y=${normY}`);
+        })
+        .catch(err => console.error('Drive command failed:', err));
     }
 
     function endDrag() {
       dragging = false;
       stick.style.left = '75px';
       stick.style.top = '75px';
-      fetch(`/move?x=0&y=0`);
+      fetch(`/move?x=0&y=0`)
+        .then(() => updateInfoPanel('Drive: Stopped'))
+        .catch(err => console.error('Stop command failed:', err));
     }
 
-    function sendTrigger(trigger) {
-      fetch(`/trigger?btn=${trigger}`);
+    function sendTrigger(trigger, value) {
+      if (trigger === 'stop') {
+        fetch(`/trigger?btn=stop`)
+          .then(response => response.text())
+          .then(data => {
+            console.log('Turret stopped');
+          })
+          .catch(err => console.error('Stop command failed:', err));
+      } else {
+        fetch(`/trigger?btn=${trigger}&value=${value}`)
+          .then(response => response.text())
+          .then(data => {
+            console.log(`${trigger.toUpperCase()} set to ${value.toFixed(2)}`);
+          })
+          .catch(err => console.error(`${trigger} command failed:`, err));
+      }
     }
 
     function sendTurretAngle() {
       const angle = document.getElementById('angleInput').value;
-      fetch(`/setTurretAngle?angle=${angle}`);
+      if (angle === '') {
+        alert('Please enter an angle value');
+        return;
+      }
+      
+      fetch(`/setTurretAngle?angle=${angle}`)
+        .then(response => response.text())
+        .then(data => {
+          updateInfoPanel(`Turret angle set to ${angle}°`);
+        })
+        .catch(err => {
+          console.error('Turret angle command failed:', err);
+          updateInfoPanel('Turret angle command failed');
+        });
     }
+
+    function resetOdometry() {
+      fetch('/reset')
+        .then(response => response.text())
+        .then(data => {
+          updateInfoPanel('Odometry reset successfully');
+          getPose();
+        })
+        .catch(err => {
+          console.error('Reset failed:', err);
+          updateInfoPanel('Reset command failed');
+        });
+    }
+
+    function getPose() {
+      fetch('/pose')
+        .then(response => response.json())
+        .then(data => {
+          updateInfoPanel(`Position: X=${data.x.toFixed(3)}, Y=${data.y.toFixed(3)}, θ=${(data.theta * 180 / Math.PI).toFixed(1)}°`);
+        })
+        .catch(err => {
+          console.error('Get pose failed:', err);
+          updateInfoPanel('Failed to get pose data');
+        });
+    }
+
+    function updateInfoPanel(message) {
+      const timestamp = new Date().toLocaleTimeString();
+      let triggerStatus = 'None';
+      
+      if (currentTurretValue < 0) {
+        triggerStatus = `LT: ${(Math.abs(currentTurretValue) / 100).toFixed(2)}`;
+      } else if (currentTurretValue > 0) {
+        triggerStatus = `RT: ${(currentTurretValue / 100).toFixed(2)}`;
+      }
+      
+      infoPanel.innerHTML = `
+        Robot Status: Active<br>
+        Turret Control: ${triggerStatus}<br>
+        Last Command: ${message || 'None'}<br>
+        Time: ${timestamp}
+      `;
+    }
+
+    // Initialize display
+    window.addEventListener('load', function() {
+      turretSlider.value = 0;
+      turretValue.textContent = '0%';
+      updateInfoPanel('System initialized');
+    });
+
+    // Auto-update pose every 2 seconds
+    setInterval(getPose, 2000);
   </script>
 </body>
 </html>
 )rawliteral";
-
 
 WebServer server(80);
 
@@ -332,6 +599,10 @@ float joyY = 0.0f;  // Joystick Y-axis
 float joyturretX = 0.0f;  // Turret joystick X-axis
 float joyturretY = 0.0f;  // Turret joystick Y-axis
 
+// Odometry timing
+unsigned long lastOdometryTime = 0;
+const unsigned long ODOMETRY_INTERVAL = 100; // Odometry update interval in ms
+
 // Current command
 // char command = 'f'; // start forward
 
@@ -367,10 +638,44 @@ void setMotor(int pwmPin, int dirPin, float pwmVal, int channel) {
   }
 }
 
+void setupProbabilisticEndpoints() {
+  // Endpoint to get current pose with uncertainty
+  server.on("/pose", HTTP_GET, []() {
+    String json = "{";
+    json += "\"x\":" + String(getRobotX(), 6) + ",";
+    json += "\"y\":" + String(getRobotY(), 6) + ",";
+    json += "\"theta\":" + String(getRobotTheta(), 6) + ",";
+    json += "\"uncertainty_x\":" + String(getUncertaintyX(), 6) + ",";
+    json += "\"uncertainty_y\":" + String(getUncertaintyY(), 6) + ",";
+    json += "\"uncertainty_theta\":" + String(getUncertaintyTheta(), 6);
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+  
+  // Endpoint to reset odometry
+  server.on("/reset", HTTP_GET, []() {
+    resetOdometry();
+    server.send(200, "text/plain", "Odometry reset");
+  });
+  
+  // Endpoint to sample from pose distribution
+  server.on("/sample", HTTP_GET, []() {
+    float sample_x, sample_y, sample_theta;
+    samplePose(sample_x, sample_y, sample_theta);
+    String json = "{";
+    json += "\"sample_x\":" + String(sample_x, 6) + ",";
+    json += "\"sample_y\":" + String(sample_y, 6) + ",";
+    json += "\"sample_theta\":" + String(sample_theta, 6);
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+}
+
 void setup() {
 
   Serial.begin(115200);
   Serial.println("ESP32 Ready");
+  initOdometry(); // Initialize odometry
   WiFi.softAP(ssid, password, 5, 0, 2);
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("ESP IP: ");
@@ -399,17 +704,17 @@ server.on("/move", HTTP_GET, []() {
 // Trigger buttons: LT or RT
 server.on("/trigger", HTTP_GET, []() {
   String btn = server.arg("btn");
+  float value = server.arg("value").toFloat();  // Use 'value' param
+
   if (btn == "lt") {
-    // e.g., turret rotate left
-    pwmT_out = -maxPWM;
-    delay(5000); // Optional delay for button press effect
+    pwmT_out = -value * maxPWM;
   } else if (btn == "rt") {
-    // e.g., turret rotate right
-    pwmT_out = maxPWM;
-    delay(5000); // Optional delay for button press effect
+    pwmT_out = value * maxPWM;
+  } else if (btn == "stop") {
+    pwmT_out = 0;
   }
+
   setMotor(pwmT, dirT, pwmT_out, 2);
-  // Optional: set a timer or flag to stop rotation later
   server.send(200, "text/plain", "Trigger received: " + btn);
 });
 
@@ -592,8 +897,10 @@ void loop() {
       // Calculate error for turret PID
       float errorT = targetTurretAngle - currentAngleT;
       float pwmT_out = 0;
-      if(abs(errorT) < 1.0) {
+      if(abs(errorT) < 1.0 || abs(pwmT_out) < 100) {
         setMotor(pwmT, dirT, 0, 2);  // Stop turret
+        pwmT_out = 0; // Reset output if within threshold
+        integralT = 0; // Reset integral term if within threshold
       }
       else{
         float dtT = (now - lastTurretTime) / 1000.0; // Time in seconds
@@ -643,16 +950,16 @@ void loop() {
     // Joystick-based differential drive control:
     // Negative ly because joystick up may be negative, adjust if needed
     // Normalize joystick values to -1 to 1 range
-    float forward = ly;  
-    float turn = rx;
+    // float forward = ly;  
+    // float turn = rx;
 
-    // HTTML Joystick control
+    // // HTTML Joystick control
     // float forward = joyY;  // Forward/backward control from joystick
     // float turn = joyX;     // Left/right control from joystick
 
-    // bool useUdp = (millis() - lastUdpTime < 100);
-    // float forward = useUdp ? ly : joyY;
-    // float turn = useUdp ? rx : joyX;
+    bool useUdp = (millis() - lastUdpTime < 100);
+    float forward = useUdp ? ly : joyY;
+    float turn = useUdp ? rx : joyX;
 
     // Combine for left and right motor base PWM
     float pwmL_base = (forward + turn) * basePWM;
@@ -672,9 +979,30 @@ void loop() {
     Serial.printf("L: %5.1f RPM | R: %5.1f RPM | Error_Turret: %5.1f  | PWM: L=%d, R=%d, T=%d | Rot: L=%.2f, R=%.2f, T_angle=%.2f\n", 
               rpmL, rpmR, errorT, (int)pwmL_out, (int)pwmR_out, (int)pwmT_out, rotL, rotR, currentAngleT);
 
-    // Print synchronization status
-    // Serial.printf("Cmd:%c Speed:%d L_RPM:%.1f R_RPM:%.1f Corr:%.1f PWM_L:%.0f PWM_R:%.0f\n",
-    //               command, (int)basePWM, rpmL, rpmR, correctionPWM, pwmL_out, pwmR_out);
+  }
+  if(now- lastOdometryTime >= ODOMETRY_INTERVAL) {
+    // Update odometry every ODOMETRY_INTERVAL ms
+    updateOdometry();
+
+    static unsigned long lastDetailedPrint = 0;
+    if (now - lastDetailedPrint >= 2000) { // Print every 2-second
+      Serial.println("\n PROBABILISTIC ODOM ESTIMATION:");
+      printPose();
+      printMotionModel();
+
+      static unsigned long lastCovPrint = 0;
+      if (now - lastCovPrint >= 5000) { // Print covariance every 5 seconds
+        printCovariance();
+        lastCovPrint = now;
+      }
+
+      float sample_x, sample_y, sample_theta;
+      samplePose(sample_x, sample_y, sample_theta); 
+      Serial.printf("Sampled Pose: X=%.2f, Y=%.2f, Theta=%.2f\n", sample_x, sample_y, sample_theta * 180.0 / PI);
+      Serial.println("--------------------------------------------------");
+      lastDetailedPrint = now;
+    }
+    lastOdometryTime = now;
   }
 }
 
