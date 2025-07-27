@@ -40,7 +40,7 @@ const char* webpage = R"rawliteral(
     body {
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       text-align: center;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: linear-gradient(135deg, #32459bff 0%, #764ba2 100%);
       margin: 0;
       padding: 20px;
       color: white;
