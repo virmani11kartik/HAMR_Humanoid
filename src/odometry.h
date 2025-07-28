@@ -81,7 +81,7 @@ float gaussianRandom(float mean, float std_dev){
     return mean + std_dev * u * mag; // return Gaussian random variable
 }
 
-// COvariance Propagation function
+// Covariance Propagation function
 void matrixMultiply3x3(const float A[9], const float B[9], float result[9]) {
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {

@@ -12,7 +12,16 @@
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
+#include <Adafruit_BNO08x.h>
 #include "odometry.h"
+#include "ekf_localization.h"
+#include "Adafruit_ICM20948.h"
+#include "Adafruit_VL53L1X.h"
+#include <USBHID.h>
+#include <USB.h>
+#include <USB_STREAM.h>
+#include <USBHIDGamepad.h>
+#include <ESP32-USB-Soft-Host.h>
 
 // void setup() {
 //   pinMode(LED_BUILTIN, OUTPUT);
@@ -26,6 +35,11 @@
 //   digitalWrite(LED_BUILTIN, LOW);
 //   delay(1000);
 // }
+
+EKFLocalization ekf;
+bool use_ekf = true; // Use EKF localization by default
+unsigned long lastEKFTime = 0;
+const unsigned long EKF_INTERVAL = 50; // EKF update interval in milliseconds
 
 // // // float lx, ly, rx, ry, lt, rt;
 int a, b, x, y;
@@ -67,6 +81,60 @@ const char* webpage = R"rawliteral(
       align-items: center;
       justify-content: center;
       gap: 15px;
+    }
+
+    .localization-toggle {
+      margin: 20px 0;
+      padding: 15px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 15px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 30px;
+      margin: 0 10px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider-toggle {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      border-radius: 30px;
+      transition: .4s;
+    }
+
+    .slider-toggle:before {
+      position: absolute;
+      content: "";
+      height: 22px;
+      width: 22px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      border-radius: 50%;
+      transition: .4s;
+    }
+
+    input:checked + .slider-toggle {
+      background-color: #4ecdc4;
+    }
+
+    input:checked + .slider-toggle:before {
+      transform: translateX(30px);
     }
 
     #joystickZone {
@@ -233,6 +301,16 @@ const char* webpage = R"rawliteral(
       animation: pulse 2s infinite;
     }
 
+    .ekf-indicator {
+      background: #ff6b6b;
+      animation: pulse 1s infinite;
+    }
+
+    .ekf-indicator.active {
+      background: #4ecdc4;
+      animation: pulse 2s infinite;
+    }
+
     @keyframes pulse {
       0% { opacity: 1; }
       50% { opacity: 0.5; }
@@ -261,11 +339,32 @@ const char* webpage = R"rawliteral(
       color: rgba(255, 255, 255, 0.9);
       min-width: 30px;
     }
+
+    .imu-status {
+      margin: 10px 0;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      font-size: 0.9em;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <h2>HAMR Robot Control <span class="status-indicator"></span></h2>
+
+    <div class="localization-toggle">
+      <h3>Localization Mode</h3>
+      <span>Odometry</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="ekfToggle" checked>
+        <span class="slider-toggle"></span>
+      </label>
+      <span>EKF Fusion</span>
+      <div class="imu-status" id="imuStatus">
+        IMU Status: <span class="ekf-indicator" id="imuIndicator"></span> Checking...
+      </div>
+    </div>
 
     <div class="control-group">
       <h3>Drive Control</h3>
@@ -298,14 +397,17 @@ const char* webpage = R"rawliteral(
     </div>
 
     <div class="control-group">
-      <button onclick="resetOdometry()">Reset Odometry</button>
+      <button onclick="resetLocalization()">Reset Localization</button>
+      <button onclick="calibrateIMU()">Calibrate IMU</button>
       <button onclick="getPose()">Get Pose</button>
     </div>
 
     <div class="info-panel" id="infoPanel">
       Robot Status: Ready<br>
+      Localization: EKF Mode<br>
       Position: X=0.000, Y=0.000, θ=0.0°<br>
-      LT: 0.00 | RT: 0.00<br>
+      Uncertainty: ±0.000m, ±0.0°<br>
+      IMU: Not calibrated<br>
       Last Command: None
     </div>
   </div>
@@ -316,9 +418,23 @@ const char* webpage = R"rawliteral(
     const turretSlider = document.getElementById('turretSlider');
     const turretValue = document.getElementById('turretValue');
     const infoPanel = document.getElementById('infoPanel');
+    const ekfToggle = document.getElementById('ekfToggle');
+    const imuStatus = document.getElementById('imuStatus');
+    const imuIndicator = document.getElementById('imuIndicator');
     
     let dragging = false;
     let currentTurretValue = 0;
+    let useEKF = true;
+
+    // EKF Toggle
+    ekfToggle.addEventListener('change', function() {
+      useEKF = this.checked;
+      fetch(`/setEKF?enabled=${useEKF}`)
+        .then(response => response.text())
+        .then(data => {
+          updateInfoPanel(`Localization mode: ${useEKF ? 'EKF' : 'Odometry'}`);
+        });
+    });
 
     // Joystick event listeners
     zone.addEventListener('touchstart', startDrag);
@@ -335,22 +451,18 @@ const char* webpage = R"rawliteral(
       turretValue.textContent = currentTurretValue + '%';
       
       if (currentTurretValue < 0) {
-        // Left side = LT trigger
         const ltValue = Math.abs(currentTurretValue) / 100.0;
         sendTrigger('lt', ltValue);
       } else if (currentTurretValue > 0) {
-        // Right side = RT trigger  
         const rtValue = currentTurretValue / 100.0;
         sendTrigger('rt', rtValue);
       } else {
-        // Center = stop
         sendTrigger('stop', 0);
       }
       
       updateInfoPanel();
     });
 
-    // Auto-return to center when released
     turretSlider.addEventListener('mouseup', returnToCenter);
     turretSlider.addEventListener('touchend', returnToCenter);
 
@@ -446,11 +558,11 @@ const char* webpage = R"rawliteral(
         });
     }
 
-    function resetOdometry() {
+    function resetLocalization() {
       fetch('/reset')
         .then(response => response.text())
         .then(data => {
-          updateInfoPanel('Odometry reset successfully');
+          updateInfoPanel('Localization reset successfully');
           getPose();
         })
         .catch(err => {
@@ -459,11 +571,31 @@ const char* webpage = R"rawliteral(
         });
     }
 
+    function calibrateIMU() {
+      fetch('/calibrateIMU')
+        .then(response => response.text())
+        .then(data => {
+          updateInfoPanel('IMU calibration initiated');
+          checkIMUStatus();
+        })
+        .catch(err => {
+          console.error('IMU calibration failed:', err);
+          updateInfoPanel('IMU calibration failed');
+        });
+    }
+
     function getPose() {
       fetch('/pose')
         .then(response => response.json())
         .then(data => {
-          updateInfoPanel(`Position: X=${data.x.toFixed(3)}, Y=${data.y.toFixed(3)}, θ=${(data.theta * 180 / Math.PI).toFixed(1)}°`);
+          const locMode = useEKF ? 'EKF' : 'Odometry';
+          let poseInfo = `Position: X=${data.x.toFixed(3)}, Y=${data.y.toFixed(3)}, θ=${(data.theta * 180 / Math.PI).toFixed(1)}°`;
+          
+          if (data.uncertainty_x !== undefined) {
+            poseInfo += `<br>Uncertainty: ±${data.uncertainty_x.toFixed(3)}m, ±${(data.uncertainty_theta * 180 / Math.PI).toFixed(1)}°`;
+          }
+          
+          updateInfoPanel(poseInfo, locMode);
         })
         .catch(err => {
           console.error('Get pose failed:', err);
@@ -471,7 +603,27 @@ const char* webpage = R"rawliteral(
         });
     }
 
-    function updateInfoPanel(message) {
+    function checkIMUStatus() {
+      fetch('/imuStatus')
+        .then(response => response.json())
+        .then(data => {
+          const status = data.calibrated ? 'Calibrated' : 'Not calibrated';
+          const indicator = document.getElementById('imuIndicator');
+          
+          if (data.calibrated) {
+            indicator.classList.add('active');
+            imuStatus.innerHTML = `IMU Status: <span class="ekf-indicator active"></span> ${status}`;
+          } else {
+            indicator.classList.remove('active');
+            imuStatus.innerHTML = `IMU Status: <span class="ekf-indicator"></span> ${status}`;
+          }
+        })
+        .catch(err => {
+          console.error('IMU status check failed:', err);
+        });
+    }
+
+    function updateInfoPanel(message, locMode) {
       const timestamp = new Date().toLocaleTimeString();
       let triggerStatus = 'None';
       
@@ -481,8 +633,11 @@ const char* webpage = R"rawliteral(
         triggerStatus = `RT: ${(currentTurretValue / 100).toFixed(2)}`;
       }
       
+      const mode = locMode || (useEKF ? 'EKF Mode' : 'Odometry Mode');
+      
       infoPanel.innerHTML = `
         Robot Status: Active<br>
+        Localization: ${mode}<br>
         Turret Control: ${triggerStatus}<br>
         Last Command: ${message || 'None'}<br>
         Time: ${timestamp}
@@ -494,10 +649,12 @@ const char* webpage = R"rawliteral(
       turretSlider.value = 0;
       turretValue.textContent = '0%';
       updateInfoPanel('System initialized');
+      checkIMUStatus();
     });
 
-    // Auto-update pose every 2 seconds
+    // Auto-update pose and IMU status
     setInterval(getPose, 2000);
+    setInterval(checkIMUStatus, 5000);
   </script>
 </body>
 </html>
@@ -529,6 +686,10 @@ const int pwmT = 7;
 const int dirT = 6;   
 const int enAT = 5;
 const int enBT = 4;
+
+// IMU pins
+const int IMU_SDA = 38; 
+const int IMU_SCL = 39;
 
 // Encoder counts (volatile for ISR)
 volatile long ticksL = 0;
@@ -638,36 +799,96 @@ void setMotor(int pwmPin, int dirPin, float pwmVal, int channel) {
   }
 }
 
-void setupProbabilisticEndpoints() {
-  // Endpoint to get current pose with uncertainty
+void setupWebServerEndpoints() {
+  server.on("/", HTTP_GET, []() {
+    server.send(200, "text/html", webpage);
+  });
+
+  // Movement control
+  server.on("/move", HTTP_GET, []() {
+    float x = server.arg("x").toFloat();
+    float y = server.arg("y").toFloat();
+    joyX = x;
+    joyY = -y;
+    server.send(200, "text/plain", "Movement received");
+  });
+
+  // Turret control
+  server.on("/trigger", HTTP_GET, []() {
+    String btn = server.arg("btn");
+    float value = server.arg("value").toFloat();
+
+    if (btn == "lt") {
+      pwmT_out = -value * maxPWM;
+    } else if (btn == "rt") {
+      pwmT_out = value * maxPWM;
+    } else if (btn == "stop") {
+      pwmT_out = 0;
+    }
+
+    setMotor(pwmT, dirT, pwmT_out, 2);
+    server.send(200, "text/plain", "Trigger received: " + btn);
+  });
+
+  // Turret angle control
+  server.on("/setTurretAngle", HTTP_GET, []() {
+    float angle = server.arg("angle").toFloat();
+    inputTurretAngle = angle;
+    targetTurretAngle = inputTurretAngle * turretGearRatio;
+    server.send(200, "text/plain", "Turret angle set.");
+  });
+
+  // EKF toggle
+  server.on("/setEKF", HTTP_GET, []() {
+    String enabled = server.arg("enabled");
+    use_ekf = (enabled == "true");
+    server.send(200, "text/plain", use_ekf ? "EKF enabled" : "EKF disabled");
+  });
+
+  // IMU calibration
+  server.on("/calibrateIMU", HTTP_GET, []() {
+    ekf.calibrateIMU();
+    server.send(200, "text/plain", "IMU calibration initiated");
+  });
+
+  // IMU status
+  server.on("/imuStatus", HTTP_GET, []() {
+    bool calibrated = ekf.isIMUCalibrated();
+    String json = "{\"calibrated\":" + String(calibrated ? "true" : "false") + "}";
+    server.send(200, "application/json", json);
+  });
+
+  // Pose endpoint - now returns EKF or odometry data based on mode
   server.on("/pose", HTTP_GET, []() {
     String json = "{";
-    json += "\"x\":" + String(getRobotX(), 6) + ",";
-    json += "\"y\":" + String(getRobotY(), 6) + ",";
-    json += "\"theta\":" + String(getRobotTheta(), 6) + ",";
-    json += "\"uncertainty_x\":" + String(getUncertaintyX(), 6) + ",";
-    json += "\"uncertainty_y\":" + String(getUncertaintyY(), 6) + ",";
-    json += "\"uncertainty_theta\":" + String(getUncertaintyTheta(), 6);
+    if (use_ekf) {
+      json += "\"x\":" + String(ekf.getX(), 6) + ",";
+      json += "\"y\":" + String(ekf.getY(), 6) + ",";
+      json += "\"theta\":" + String(ekf.getTheta(), 6) + ",";
+      json += "\"uncertainty_x\":" + String(ekf.getUncertaintyX(), 6) + ",";
+      json += "\"uncertainty_y\":" + String(ekf.getUncertaintyY(), 6) + ",";
+      json += "\"uncertainty_theta\":" + String(ekf.getUncertaintyTheta(), 6);
+    } else {
+      json += "\"x\":" + String(getRobotX(), 6) + ",";
+      json += "\"y\":" + String(getRobotY(), 6) + ",";
+      json += "\"theta\":" + String(getRobotTheta(), 6) + ",";
+      json += "\"uncertainty_x\":" + String(getUncertaintyX(), 6) + ",";
+      json += "\"uncertainty_y\":" + String(getUncertaintyY(), 6) + ",";
+      json += "\"uncertainty_theta\":" + String(getUncertaintyTheta(), 6);
+    }
     json += "}";
     server.send(200, "application/json", json);
   });
-  
-  // Endpoint to reset odometry
+
+  // Reset localization
   server.on("/reset", HTTP_GET, []() {
     resetOdometry();
-    server.send(200, "text/plain", "Odometry reset");
+    ekf.resetEKF();
+    server.send(200, "text/plain", "Localization reset");
   });
-  
-  // Endpoint to sample from pose distribution
-  server.on("/sample", HTTP_GET, []() {
-    float sample_x, sample_y, sample_theta;
-    samplePose(sample_x, sample_y, sample_theta);
-    String json = "{";
-    json += "\"sample_x\":" + String(sample_x, 6) + ",";
-    json += "\"sample_y\":" + String(sample_y, 6) + ",";
-    json += "\"sample_theta\":" + String(sample_theta, 6);
-    json += "}";
-    server.send(200, "application/json", json);
+
+  server.onNotFound([]() {
+    server.send(404, "text/plain", "404 Not Found");
   });
 }
 
@@ -675,60 +896,22 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println("ESP32 Ready");
+
   initOdometry(); // Initialize odometry
+  if (ekf.initIMU(IMU_SDA, IMU_SCL)) {
+    ekf.initEKF();
+    Serial.println("EKF and IMU initialized successfully");
+  } else {
+    Serial.println("Warning: IMU initialization failed, using odometry only");
+    use_ekf = false;
+  }
+
   WiFi.softAP(ssid, password, 5, 0, 2);
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("ESP IP: ");
   Serial.println(myIP);
 
-  server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", webpage);  // Serve the HTML page
-  });
-  // server.on("/move", HTTP_GET, []() {
-  //   String xVal = server.arg("x");
-  //   String yVal = server.arg("y");
-  //   joyX= xVal.toFloat();
-  //   joyY= -yVal.toFloat();
-  //   Serial.printf("Joystick X: %.2f, Y: %.2f\n", joyX, joyY);
-  //   server.send(200, "text/plain", "OK");
-  // });
-  // Joystick movement (single virtual joystick)
-server.on("/move", HTTP_GET, []() {
-  float x = server.arg("x").toFloat();
-  float y = server.arg("y").toFloat();
-  joyX = x;
-  joyY = -y;
-  server.send(200, "text/plain", "Movement received");
-});
-
-// Trigger buttons: LT or RT
-server.on("/trigger", HTTP_GET, []() {
-  String btn = server.arg("btn");
-  float value = server.arg("value").toFloat();  // Use 'value' param
-
-  if (btn == "lt") {
-    pwmT_out = -value * maxPWM;
-  } else if (btn == "rt") {
-    pwmT_out = value * maxPWM;
-  } else if (btn == "stop") {
-    pwmT_out = 0;
-  }
-
-  setMotor(pwmT, dirT, pwmT_out, 2);
-  server.send(200, "text/plain", "Trigger received: " + btn);
-});
-
-// Turret angle input
-server.on("/setTurretAngle", HTTP_GET, []() {
-  float angle = server.arg("angle").toFloat();
-  inputTurretAngle = angle;
-  targetTurretAngle = inputTurretAngle * turretGearRatio; // Apply gear ratio
-  server.send(200, "text/plain", "Turret angle set.");
-});
-
-  server.onNotFound([]() {
-    server.send(404, "text/plain", "404 Not Found");
-  });
+  setupWebServerEndpoints(); // Setup web server endpoints
   server.begin();
   Serial.println("HTTP server started");
   udp.begin(port);
@@ -868,15 +1051,6 @@ void loop() {
     lastErrorSync = errorSync;
 
     // Turret control based on HTML joystick input
-    // float turretSpeed = joyturretX * maxPWM;  // or joyturretY * maxPWM;
-    // pwmT_out = turretSpeed;
-    // noInterrupts();
-    // long currentTicksT = ticksT;
-    // interrupts();
-    // currentAngleT = currentTicksT * DEGREES_PER_TURRET_TICK;
-    // currentAngleT = fmod(currentAngleT / turretGearRatio, 360.0);
-    // setMotor(pwmT, dirT, turretSpeed, 2);
-
     if (lt > 0.1 || rt > 0.1){
     // Simple turret control based on triggers
       float turretSpeed = (lt > 0.1) ? -lt * maxPWM : rt * maxPWM;
@@ -891,7 +1065,6 @@ void loop() {
       noInterrupts();
       long currentTicksT = ticksT;
       interrupts();
-
       // Calculate turret angle in degrees
       float currentAngleT = currentTicksT * DEGREES_PER_TURRET_TICK;
       // Calculate error for turret PID
@@ -984,11 +1157,31 @@ void loop() {
     // Update odometry every ODOMETRY_INTERVAL ms
     updateOdometry();
 
+    // Update EKF if enabled
+    if(use_ekf && (now - lastEKFTime >= EKF_INTERVAL)) {
+      ekf.updateEKF();
+      lastEKFTime = now;
+    }
+
     static unsigned long lastDetailedPrint = 0;
-    if (now - lastDetailedPrint >= 2000) { // Print every 2-second
-      Serial.println("\n PROBABILISTIC ODOM ESTIMATION:");
-      printPose();
-      printMotionModel();
+    if (now - lastDetailedPrint >= 1000) { // Print every second
+      Serial.println("\n LOCALIZATION STATUS:");
+
+      if(use_ekf) {
+        Serial.println("EKF Mode: Enabled");
+        ekf.printState();
+        // Get IMU data for display
+        float roll, pitch, yaw, omega;
+        if(ekf.getIMUData(roll, pitch, yaw, omega)) {
+          Serial.printf("IMU: Roll=%.2f°, Pitch=%.2f°, Yaw=%.2f°, Omega=%.3f rad/s\n", 
+                       roll*180/PI, pitch*180/PI, yaw*180/PI, omega);
+        }
+        Serial.printf("IMU Calibrated: %s\n", ekf.isIMUCalibrated() ? "Yes" : "No");
+      } else {
+        Serial.println("ODOMETRY ONLY");
+        printPose();
+        printMotionModel();
+      }
 
       static unsigned long lastCovPrint = 0;
       if (now - lastCovPrint >= 5000) { // Print covariance every 5 seconds
