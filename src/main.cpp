@@ -13,6 +13,7 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #include "odometry.h"
+#include <string.h>
 
 // void setup() {
 //   pinMode(LED_BUILTIN, OUTPUT);
@@ -274,13 +275,20 @@ const char* webpage = R"rawliteral(
       </div>
     </div>
 
+    <div class="info-panel" id="infoPanel">
+      Robot Status: Ready<br>
+      Position: X=0.000, Y=0.000, θ=0.0°<br>
+      L: 0.00 | R: 0.00<br>
+      Last Command: None
+    </div>
+
     <div class="control-group">
       <h3>Turret Control</h3>
       <div class="trigger-control">
         <div class="slider-container">
-          <span class="trigger-end-label">LT</span>
+          <span class="trigger-end-label">L</span>
           <input type="range" id="turretSlider" class="slider" min="-100" max="100" value="0" step="1">
-          <span class="trigger-end-label">RT</span>
+          <span class="trigger-end-label">R</span>
         </div>
         <div class="slider-labels">
           <span>-100%</span>
@@ -300,13 +308,6 @@ const char* webpage = R"rawliteral(
     <div class="control-group">
       <button onclick="resetOdometry()">Reset Odometry</button>
       <button onclick="getPose()">Get Pose</button>
-    </div>
-
-    <div class="info-panel" id="infoPanel">
-      Robot Status: Ready<br>
-      Position: X=0.000, Y=0.000, θ=0.0°<br>
-      LT: 0.00 | RT: 0.00<br>
-      Last Command: None
     </div>
   </div>
 
@@ -335,13 +336,13 @@ const char* webpage = R"rawliteral(
       turretValue.textContent = currentTurretValue + '%';
       
       if (currentTurretValue < 0) {
-        // Left side = LT trigger
+        // Left side = L trigger
         const ltValue = Math.abs(currentTurretValue) / 100.0;
-        sendTrigger('lt', ltValue);
+        sendTrigger('l', ltValue);
       } else if (currentTurretValue > 0) {
-        // Right side = RT trigger  
+        // Right side = R trigger  
         const rtValue = currentTurretValue / 100.0;
-        sendTrigger('rt', rtValue);
+        sendTrigger('r', rtValue);
       } else {
         // Center = stop
         sendTrigger('stop', 0);
@@ -476,9 +477,9 @@ const char* webpage = R"rawliteral(
       let triggerStatus = 'None';
       
       if (currentTurretValue < 0) {
-        triggerStatus = `LT: ${(Math.abs(currentTurretValue) / 100).toFixed(2)}`;
+        triggerStatus = `L: ${(Math.abs(currentTurretValue) / 100).toFixed(2)}`;
       } else if (currentTurretValue > 0) {
-        triggerStatus = `RT: ${(currentTurretValue / 100).toFixed(2)}`;
+        triggerStatus = `R: ${(currentTurretValue / 100).toFixed(2)}`;
       }
       
       infoPanel.innerHTML = `
@@ -496,8 +497,8 @@ const char* webpage = R"rawliteral(
       updateInfoPanel('System initialized');
     });
 
-    // Auto-update pose every 2 seconds
-    setInterval(getPose, 2000);
+    // Auto-update pose every 1 seconds
+    setInterval(getPose, 1000);
   </script>
 </body>
 </html>
@@ -548,19 +549,19 @@ const int TICKS_PER_WHEEL_REV = CPR * GEAR_RATIO; // 9600 ticks per wheel revolu
 // Turret motor specs
 const int TICKS_PER_TURRET_REV = 2704; // 13 PPR × 2 (quadrature) × 104 (gear ratio) = 2704 ticks/rev at output
 const float DEGREES_PER_TURRET_TICK = 360.0 / TICKS_PER_TURRET_REV; // Degrees per tick
-const float motorGearTeeth = 41.0; // Motor gear teeth
-const float outputGearTeeth = 130.0; // Output gear teeth
+const float motorGearTeeth = 40.0; // Motor gear teeth
+const float outputGearTeeth = 136.0; // Output gear teeth
 const float turretGearRatio = outputGearTeeth / motorGearTeeth; // Turret gear ratio
 
 // Target angle for turret in degrees
-float currentAngleT = 0;
+float currentAngleT = 0.0;
 float inputTurretAngle = 0.0;  // Desired turret angle in degrees
 float targetTurretAngle = inputTurretAngle * turretGearRatio; // Target angle in degrees
 
 // PID constants for turret control
-const float Kp_turret = 12.0;
-const float Ki_turret = 0.8;
-const float Kd_turret = 0.8;
+const float Kp_turret = 18.0;
+const float Ki_turret = 0.05;
+const float Kd_turret = 0.1;
 
 float integralT = 0.0; // Integral term for turret PID0
 float lastErrorT = 0.0; // Last error for turret PID
@@ -586,18 +587,21 @@ long lastTicksR = 0;
 // Base PWM speed (0-4095)
 float basePWM = 4095;
 float pwmT_out = 0;
+float scaleFactor = 131.67;
 // float turretSpeed = 0.0;
 
 // Joystick control variables
 float ly = 0.0f;  // left stick vertical (forward/back)
 float rx = 0.0f;  // right stick horizontal (turn)
-float lt = 0.0f;
-float rt = 0.0f; // left/right triggers
+float lt = INT32_MIN; // left trigger
+float rt = INT32_MIN; // left/right triggers
 // HTTML Joystick control variables
 float joyX = 0.0f;  // Joystick X-axis
 float joyY = 0.0f;  // Joystick Y-axis
 float joyturretX = 0.0f;  // Turret joystick X-axis
 float joyturretY = 0.0f;  // Turret joystick Y-axis
+String btn = "stop"; // Button pressed (e.g., 'f' for forward, 'b' for backward)
+float value = 0.0f; // Value of the button pressed
 
 // Odometry timing
 unsigned long lastOdometryTime = 0;
@@ -676,7 +680,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("ESP32 Ready");
   initOdometry(); // Initialize odometry
-  WiFi.softAP(ssid, password, 5, 0, 2);
+  WiFi.softAP(ssid, password, 4, 0, 2);
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("ESP IP: ");
   Serial.println(myIP);
@@ -693,38 +697,28 @@ void setup() {
   //   server.send(200, "text/plain", "OK");
   // });
   // Joystick movement (single virtual joystick)
-server.on("/move", HTTP_GET, []() {
-  float x = server.arg("x").toFloat();
-  float y = server.arg("y").toFloat();
-  joyX = x;
-  joyY = -y;
-  server.send(200, "text/plain", "Movement received");
-});
+  server.on("/move", HTTP_GET, []() {
+    float x = server.arg("x").toFloat();
+    float y = server.arg("y").toFloat();
+    joyX = x;
+    joyY = -y;
+    server.send(200, "text/plain", "Movement received");
+  });
 
 // Trigger buttons: LT or RT
-server.on("/trigger", HTTP_GET, []() {
-  String btn = server.arg("btn");
-  float value = server.arg("value").toFloat();  // Use 'value' param
-
-  if (btn == "lt") {
-    pwmT_out = -value * maxPWM;
-  } else if (btn == "rt") {
-    pwmT_out = value * maxPWM;
-  } else if (btn == "stop") {
-    pwmT_out = 0;
-  }
-
-  setMotor(pwmT, dirT, pwmT_out, 2);
-  server.send(200, "text/plain", "Trigger received: " + btn);
-});
+  server.on("/trigger", HTTP_GET, []() {
+    btn = server.arg("btn");
+    value = server.arg("value").toFloat();  // Use 'value' param
+    server.send(200, "text/plain", "Trigger received: " + btn);
+  });
 
 // Turret angle input
-server.on("/setTurretAngle", HTTP_GET, []() {
-  float angle = server.arg("angle").toFloat();
-  inputTurretAngle = angle;
-  targetTurretAngle = inputTurretAngle * turretGearRatio; // Apply gear ratio
-  server.send(200, "text/plain", "Turret angle set.");
-});
+  server.on("/setTurretAngle", HTTP_GET, []() {
+    float angle = server.arg("angle").toFloat();
+    inputTurretAngle = -angle;
+    targetTurretAngle = inputTurretAngle * turretGearRatio; // Apply gear ratio
+    server.send(200, "text/plain", "Turret angle set.");
+  });
 
   server.onNotFound([]() {
     server.send(404, "text/plain", "404 Not Found");
@@ -752,7 +746,6 @@ server.on("/setTurretAngle", HTTP_GET, []() {
   ledcAttachPin(pwmR, 1);
   ledcAttachPin(pwmT, 2); // Attach turret PWM pin to channel 2
 
-
   // Encoder pins with pull-ups
   pinMode(encAL, INPUT_PULLUP);
   pinMode(encBL, INPUT_PULLUP);
@@ -772,33 +765,34 @@ server.on("/setTurretAngle", HTTP_GET, []() {
   lastTurretTime = millis();
 
   Serial.println("Motor Sync Control Ready");
-//   Serial.println("Commands: f=forward, b=backward, r=right, l=left, s=stop, +=faster, -=slower");
+  //Serial.println("Commands: f=forward, b=backward, r=right, l=left, s=stop, +=faster, -=slower");
   Serial.println("Send joystick data like: LX:0.00 LY:0.00 RX:0.00 RY:0.00 LT:0.00 RT:0.00 A:0 B:0 X:0 Y:0");
   Serial.printf("Initial Speed PWM: %.0f\n", basePWM);
 }
 
 void loop() {
+
   // Handle serial commands
-//   if (Serial.available()) {
-//     char newCommand = Serial.read();
-//     if (newCommand == 'f' || newCommand == 'b' || newCommand == 'r' || newCommand == 'l' || newCommand == 's') {
-//       command = newCommand;
-//       integralSync = 0;
-//       lastErrorSync = 0;
-//       Serial.printf("Command: %c\n", command);
-//     } else if (newCommand == '+') {
-//       basePWM += 10;
-//       if (basePWM > 4095) basePWM = 4095;
-//       Serial.printf("Speed increased: %d\n", (int)basePWM);
-//     } else if (newCommand == '-') {
-//       basePWM -= 10;
-//       if (basePWM < 0) basePWM = 0;
-//       Serial.printf("Speed decreased: %d\n", (int)basePWM);
-//     }
-//   }
-    // Read joystick data from serial
-    // if (Serial.available()) {
-    // String msg = Serial.readStringUntil('\n');
+  // if (Serial.available()) {
+  //   char newCommand = Serial.read();
+  //   if (newCommand == 'f' || newCommand == 'b' || newCommand == 'r' || newCommand == 'l' || newCommand == 's') {
+  //     command = newCommand;
+  //     integralSync = 0;
+  //     lastErrorSync = 0;
+  //     Serial.printf("Command: %c\n", command);
+  //   } else if (newCommand == '+') {
+  //     basePWM += 10;
+  //     if (basePWM > 4095) basePWM = 4095;
+  //     Serial.printf("Speed increased: %d\n", (int)basePWM);
+  //   } else if (newCommand == '-') {
+  //     basePWM -= 10;
+  //     if (basePWM < 0) basePWM = 0;
+  //     Serial.printf("Speed decreased: %d\n", (int)basePWM);
+  //   }
+  // }
+  //   Read joystick data from serial
+  //   if (Serial.available()) {
+  //   String msg = Serial.readStringUntil('\n');}
 
     server.handleClient(); // Handle HTTP requests
     int len = udp.parsePacket();
@@ -858,13 +852,13 @@ void loop() {
     lastPidTime = now;
 
     // Calculate error between motors (left RPM minus right RPM)
-    float errorSync = rpmL - rpmR;
+    float errorSync = (rpmL - rpmR) * scaleFactor;
 
     integralSync += errorSync * dt;
     integralSync = constrain(integralSync, -100, 100);
     float dErrorSync = (errorSync - lastErrorSync) / dt;
 
-    float correctionPWM = Kp_sync * errorSync + Ki_sync * integralSync + Kd_sync * dErrorSync;
+    float rawCorrection = Kp_sync * errorSync + Ki_sync * integralSync + Kd_sync * dErrorSync;
     lastErrorSync = errorSync;
 
     // Turret control based on HTML joystick input
@@ -877,50 +871,58 @@ void loop() {
     // currentAngleT = fmod(currentAngleT / turretGearRatio, 360.0);
     // setMotor(pwmT, dirT, turretSpeed, 2);
 
+    if (btn == "l") {
+      pwmT_out = -value * maxPWM;
+    } else if (btn == "r") {
+      pwmT_out = value * maxPWM;
+    } else if (btn == "stop") {
+      pwmT_out = 0;
+    }
+    setMotor(pwmT, dirT, pwmT_out, 2);
+    
     if (lt > 0.1 || rt > 0.1){
     // Simple turret control based on triggers
+      targetTurretAngle = 0.0;
       float turretSpeed = (lt > 0.1) ? -lt * maxPWM : rt * maxPWM;
       pwmT_out = turretSpeed;
       currentAngleT = ticksT * DEGREES_PER_TURRET_TICK; // Calculate turret angle in degrees
       currentAngleT = fmod(currentAngleT/turretGearRatio, 360.0);
-    setMotor(pwmT, dirT, turretSpeed, 2);
     }
-    else if (abs(targetTurretAngle) > 0.1) {
+    else if (abs(targetTurretAngle)) {
       // Turret PID control
       // Read turret encoder counts atomically
       noInterrupts();
       long currentTicksT = ticksT;
       interrupts();
-
       // Calculate turret angle in degrees
       float currentAngleT = currentTicksT * DEGREES_PER_TURRET_TICK;
       // Calculate error for turret PID
       float errorT = targetTurretAngle - currentAngleT;
-      float pwmT_out = 0;
-      if(abs(errorT) < 1.0 || abs(pwmT_out) < 100) {
-        setMotor(pwmT, dirT, 0, 2);  // Stop turret
+      if(abs(errorT) < 1.0 ) {
         pwmT_out = 0; // Reset output if within threshold
         integralT = 0; // Reset integral term if within threshold
       }
       else{
-        float dtT = (now - lastTurretTime) / 1000.0; // Time in seconds
-        if (dtT == 0) dtT = 0.001; // Avoid division by zero
-        integralT += errorT * dtT;
-        integralT = constrain(integralT, -100, 100);
-        float dErrorT = (errorT - lastErrorT) / dtT;
-        // Calculate turret PWM output
-        float pwmT_out = Kp_turret * errorT + Ki_turret * integralT + Kd_turret * dErrorT;
-        pwmT_out = constrain(pwmT_out, -maxPWM, maxPWM);
-        // if (abs(pwmT_out) < minPWM) pwmT_out = 0;
-        // Set turret motor PWM
-        setMotor(pwmT, dirT, pwmT_out, 2); 
-        lastErrorT = errorT;
-        lastTurretTime = now;
+      float dtT = (now - lastTurretTime) / 1000.0; // Time in seconds
+      if (dtT == 0) dtT = 0.001; // Avoid division by zero
+      integralT += errorT * dtT;
+      integralT = constrain(integralT, -100, 100);
+      float dErrorT = (errorT - lastErrorT) / dtT;
+      // Calculate turret PWM output
+      pwmT_out = Kp_turret * errorT + Ki_turret * integralT + Kd_turret * dErrorT;
+      pwmT_out = constrain(pwmT_out, -maxPWM, maxPWM);
+      if (abs(pwmT_out) < 400) pwmT_out = 0;
+      lastErrorT = errorT;
+      lastTurretTime = now;
       }
     }
-    else{
-      setMotor(pwmT, dirT, 0, 2);  // Stop turret
+    else if ((lt < 0.1 || rt < 0.1) && (lt >= -1.5 || rt >= -1.5)) {
+      pwmT_out = 0.0;
+      pwmT_out = 0;
     }
+    // else{
+    //   pwmT_out = 0;
+    // }
     // Calculate base PWM values per motor based on command
     // float pwmL_base = 0, pwmR_base = 0;
     // switch (command) {
@@ -966,12 +968,14 @@ void loop() {
     float pwmR_base = (forward - turn) * basePWM;
 
     // Apply PID correction only to left motor PWM to sync speeds
+    float correctionPWM = rawCorrection;
     float pwmL_out = constrain(pwmL_base - correctionPWM, -4095, 4095);
     float pwmR_out = constrain(pwmR_base, -4095, 4095);
 
     // Set motor speeds
     setMotor(pwmL, dirL, pwmL_out, 0);
     setMotor(pwmR, dirR, pwmR_out, 1);
+    setMotor(pwmT, dirT, pwmT_out, 2);
     // Calculate rotations
     float rotL = currentTicksL / (float)TICKS_PER_WHEEL_REV;
     float rotR = currentTicksR / (float)TICKS_PER_WHEEL_REV;
@@ -985,7 +989,7 @@ void loop() {
     updateOdometry();
 
     static unsigned long lastDetailedPrint = 0;
-    if (now - lastDetailedPrint >= 2000) { // Print every 2-second
+    if (now - lastDetailedPrint >= 5000) { // Print every 1-second
       Serial.println("\n PROBABILISTIC ODOM ESTIMATION:");
       printPose();
       printMotionModel();

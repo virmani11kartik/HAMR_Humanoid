@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import re
 import time
 import math
+import socket
 
 # Prompt user for which plots to display
 print("Enter which plots to show separated by space (options: RPM PWM ERROR PID), or 'all' to show all:")
@@ -25,7 +26,7 @@ else:
     nrows, ncols = 4, 4  # fallback for 4 or more plots
 
 # Open serial port - update COM port as needed
-ser = serial.Serial('COM4', 115200, timeout=1)
+ser = serial.Serial('COM5', 115200, timeout=1)
 time.sleep(2)
 
 # Data buffers

@@ -12,8 +12,8 @@ extern volatile long ticksL;
 extern volatile long ticksR;
 
 // Configurable parameters - matched to your main code
-const float WHEEL_RADIUS = 0.0;             // meters
-const float WHEEL_BASE = 0.0;               // meters between wheels
+const float WHEEL_RADIUS = 0.0762;             // meters
+const float WHEEL_BASE = 0.297;               // meters between wheels
 
 // Probabilistic Motion Model parameters 
 // TUNABLE FOR ROBOT
