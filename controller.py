@@ -2,6 +2,7 @@ import pygame
 import socket
 import serial
 import time
+import select
 
 # # Change COM to your ESP32 port
 # ser = serial.Serial('COM4', 115200, timeout=0.1)
@@ -12,7 +13,8 @@ import time
 ESP32_IP = "192.168.4.1"  # Replace with your ESP32 IP
 ESP32_PORT = 12345
 
-sock= socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setblocking(False)  # Non-blocking mode
 
 pygame.init()
 pygame.joystick.init()
@@ -59,13 +61,19 @@ try:
         sock.sendto(msg.encode(), (ESP32_IP, ESP32_PORT))
 
         # Print what you send
-        print("Sent:", msg)
+        # print("Sent:", msg)
 
         # Read from ESP32 
         # while ser.in_waiting > 0:
         #     response = ser.readline().decode(errors='ignore').strip()
         #     if response:
         #         print(response)
+
+        # Non-blocking receive from ESP32
+        ready = select.select([sock], [], [], 0)
+        if ready[0]:
+            data, addr = sock.recvfrom(1024)
+            print("Received from ESP32:", data.decode().strip())
 
         time.sleep(0.05)
 

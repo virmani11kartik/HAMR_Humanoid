@@ -4,12 +4,17 @@
 #include <esp32-hal.h>
 #include <esp32-hal-gpio.h>
 #include <esp32-hal-ledc.h>
+#include <WiFi.h>   
+#include <WiFiUdp.h>
 
 extern const int CPR;
 extern const int GEAR_RATIO;
 extern const int TICKS_PER_WHEEL_REV;
 extern volatile long ticksL;
 extern volatile long ticksR;
+extern WiFiUDP udp;
+extern IPAddress remoteIP;
+extern unsigned int remotePort;
 
 // Configurable parameters - matched to your main code
 const float WHEEL_RADIUS = 0.0762;             // meters
@@ -312,6 +317,19 @@ void printPose() {
     Serial.print(" ± "); 
     Serial.print(sqrt(covariance[5]) * 180.0 / PI, 2);
     Serial.println(" degrees");
+
+    // UDP output
+    char buffer[150];
+    snprintf(buffer, sizeof(buffer),
+        "Robot Pose - X: %.4f ± %.4f m, Y: %.4f ± %.4f m, Theta: %.2f ± %.2f degrees",
+        robot_x, sqrt(covariance[0]),
+        robot_y, sqrt(covariance[3]),
+        robot_theta * 180.0 / PI, sqrt(covariance[5]) * 180.0 / PI
+    );
+
+    udp.beginPacket(remoteIP, remotePort);
+    udp.print(buffer);
+    udp.endPacket();
 }
 
 void printCovariance() {
@@ -319,11 +337,35 @@ void printCovariance() {
     Serial.printf("  [%8.6f %8.6f %8.6f]\n", covariance[0], covariance[1], covariance[2]);
     Serial.printf("  [%8.6f %8.6f %8.6f]\n", covariance[1], covariance[3], covariance[4]);
     Serial.printf("  [%8.6f %8.6f %8.6f]\n", covariance[2], covariance[4], covariance[5]);
+
+    // UDP output
+    // char buffer[100];
+    // snprintf(buffer, sizeof(buffer),
+    //     "Covariance Matrix:\n"
+    //     "  [%.6f %.6f %.6f]\n"
+    //     "  [%.6f %.6f %.6f]\n"
+    //     "  [%.6f %.6f %.6f]",
+    //     covariance[0], covariance[1], covariance[2],
+    //     covariance[1], covariance[3], covariance[4],
+    //     covariance[2], covariance[4], covariance[5]
+    // );
+    // udp.beginPacket(remoteIP, remotePort);
+    // udp.print(buffer);
+    // udp.endPacket();
 }
 
 void printMotionModel() {
     Serial.printf("Last Motion: rot1=%.4f, trans=%.4f, rot2=%.4f\n", 
                   last_delta_rot1, last_delta_trans, last_delta_rot2);
+    // UDP output
+    // char buffer[100];
+    // snprintf(buffer, sizeof(buffer),
+    //          "Last Motion: rot1=%.4f, trans=%.4f, rot2=%.4f",
+    //          last_delta_rot1, last_delta_trans, last_delta_rot2);
+
+    // udp.beginPacket(remoteIP, remotePort);
+    // udp.print(buffer);
+    // udp.endPacket();
 }
 
 // functions for accessing pose data
@@ -345,6 +387,15 @@ void getCovariance(float cov[6]){
 void setNoiseParameters(float alpha1, float alpha2, float alpha3, float alpha4) {
     Serial.printf("Setting noise parameters: ALPHA1=%.4f, ALPHA2=%.4f, ALPHA3=%.4f, ALPHA4=%.4f\n", 
                   alpha1, alpha2, alpha3, alpha4);
+    
+                  // UDP output
+    // char buffer[100];
+    // snprintf(buffer, sizeof(buffer),
+    //          "Setting noise parameters: ALPHA1=%.4f, ALPHA2=%.4f, ALPHA3=%.4f, ALPHA4=%.4f",
+    //          alpha1, alpha2, alpha3, alpha4);
+    // udp.beginPacket(remoteIP, remotePort);
+    // udp.print(buffer);
+    // udp.endPacket();
 }
 
 #endif // ODOMETRY_H

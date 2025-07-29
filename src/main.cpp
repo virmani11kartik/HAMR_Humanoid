@@ -514,7 +514,8 @@ const char* password = "123571113";
 WiFiUDP udp;
 const int port = 12345;  // Port to listen on
 char incoming[256];  // Buffer for incoming data
-
+IPAddress remoteIP;
+unsigned int remotePort;
 // Left
 const int pwmL = 11;
 const int dirL = 12;
@@ -639,6 +640,14 @@ void setMotor(int pwmPin, int dirPin, float pwmVal, int channel) {
   } else {
     digitalWrite(dirPin, LOW);
     ledcWrite(channel, (int)(-pwmVal));
+  }
+}
+
+void sendUDP(String msg) {
+  if (remoteIP && remotePort) {
+    udp.beginPacket(remoteIP, remotePort);
+    udp.print(msg);
+    udp.endPacket();
   }
 }
 
@@ -802,10 +811,13 @@ void loop() {
       // Serial.printf("Received: %s\n", incoming);
       String msg = String(incoming); 
 
-    int lyIndex = msg.indexOf("LY:");
-    int rxIndex = msg.indexOf("RX:");
-    int ltIndex = msg.indexOf("LT:");
-    int rtIndex = msg.indexOf("RT:");
+      remoteIP = udp.remoteIP();
+      remotePort = udp.remotePort();
+
+      int lyIndex = msg.indexOf("LY:");
+      int rxIndex = msg.indexOf("RX:");
+      int ltIndex = msg.indexOf("LT:");
+      int rtIndex = msg.indexOf("RT:");
 
     if (lyIndex != -1 && rxIndex != -1 && ltIndex != -1 && rtIndex != -1) {
       // Extract LY and RX values as floats
@@ -980,10 +992,19 @@ void loop() {
     float rotL = currentTicksL / (float)TICKS_PER_WHEEL_REV;
     float rotR = currentTicksR / (float)TICKS_PER_WHEEL_REV;
 
-    Serial.printf("L: %5.1f RPM | R: %5.1f RPM | Error_Turret: %5.1f  | PWM: L=%d, R=%d, T=%d | Rot: L=%.2f, R=%.2f, T_angle=%.2f\n", 
-              rpmL, rpmR, errorT, (int)pwmL_out, (int)pwmR_out, (int)pwmT_out, rotL, rotR, currentAngleT);
+    String status = String("L: ") + String(rpmL, 1) + " RPM | R: " + String(rpmR, 1) +
+                " RPM | Error_Turret: " + String(errorT, 1) +
+                " | PWM: L=" + String((int)pwmL_out) +
+                ", R=" + String((int)pwmR_out) +
+                ", T=" + String((int)pwmT_out) +
+                " | Rot: L=" + String(rotL, 2) +
+                ", R=" + String(rotR, 2) +
+                ", T_angle=" + String(currentAngleT, 2);
+    Serial.println(status);
+    // sendUDP(status);
 
   }
+
   if(now- lastOdometryTime >= ODOMETRY_INTERVAL) {
     // Update odometry every ODOMETRY_INTERVAL ms
     updateOdometry();
