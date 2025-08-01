@@ -26,7 +26,7 @@ const float WHEEL_BASE = 0.297;               // meters between wheels
 const float ALPHA1 = 0.1;    // Rotational error due to rotation (rad²/rad²)
 const float ALPHA2 = 0.01;   // Rotational error due to translation (rad²/m²)
 const float ALPHA3 = 0.01;   // Translational error due to translation (m²/m²)
-const float ALPHA4 = 0.1;    // Translational error due to rotation (m²/rad²)
+const float ALPHA4 = 0.1;    // Translational error due to rotation (m²/rad²)-
 
 // // Conservative settings (more uncertainty)
 // const float ALPHA1 = 0.2;    // If your robot has wheel slip
@@ -182,33 +182,41 @@ void updateOdometry() {
     float delta_trans = (dSLeft + dSRight) / 2.0;
     float delta_rot = (dSRight - dSLeft) / WHEEL_BASE;
 
-    // for differential drive kinematics
-    float delta_rot1 = 0.0;  // Initial rotation (for non-holonomic motion)
-    float delta_rot2 = delta_rot;  // Final rotation
-
-    if (fabs(delta_trans) > 0.001) {
-        delta_rot1 = atan2(delta_trans * sin(delta_rot), delta_trans * cos(delta_rot)) - robot_theta;
-        delta_rot2 = delta_rot - delta_rot1;
-    }
-
-    // store last deltas for next update
-    last_delta_rot1 = delta_rot1;
-    last_delta_trans = delta_trans;
-    last_delta_rot2 = delta_rot2;
-
     // Deterministic Motion Model update (mean)
     float old_x = robot_x;
     float old_y = robot_y;
     float old_theta = robot_theta;
 
     // Update robot pose using differential drive kinematics
-    robot_x += delta_trans * cos(robot_theta + delta_rot1);
-    robot_y += delta_trans * sin(robot_theta + delta_rot1);
+    robot_x += delta_trans * cos(robot_theta + delta_rot/2.0);
+    robot_y += delta_trans * sin(robot_theta + delta_rot/2.0);
     robot_theta += delta_rot;
     
     // Normalize theta to [-PI, PI]
     while (robot_theta > PI) robot_theta -= 2.0 * PI;
     while (robot_theta < -PI) robot_theta += 2.0 * PI;
+
+    float delta_rot1 = 0.0;  // Initial rotation
+    float delta_rot2 = delta_rot;  // Final rotation after translation
+
+    if (fabs(delta_rot) > 0.001 && fabs(delta_trans) > 0.001) {
+        // Split rotation: half before, half after translation
+        delta_rot1 = delta_rot / 2.0;
+        delta_rot2 = delta_rot / 2.0;
+    } else if (fabs(delta_rot) > 0.001) {
+        // Pure rotation
+        delta_rot1 = 0.0;
+        delta_rot2 = delta_rot;
+        delta_trans = 0.0;  // Ensure no translation for pure rotation
+    } else {
+        // Pure translation
+        delta_rot1 = 0.0;
+        delta_rot2 = 0.0;
+    }
+
+    last_delta_rot1 = delta_rot1;
+    last_delta_trans = delta_trans;
+    last_delta_rot2 = delta_rot2;
 
     // Probabilistic Motion Model update (covariance)
     // Motion model noise
@@ -217,20 +225,22 @@ void updateOdometry() {
     float rot2_var = ALPHA1 * fabs(delta_rot2) + ALPHA2 * fabs(delta_trans);
 
     // Encoder Noise
-    float encoder_noise = ENCODER_NOISE_PER_TICK * (fabs(deltaLeft) + fabs(deltaRight));
+    float total_distance = fabs(dSLeft) + fabs(dSRight);
+    float encoder_noise = ENCODER_NOISE_PER_TICK * total_distance / (2.0 * WHEEL_RADIUS);
     trans_var += encoder_noise;
 
     // jacobian of the motion model wrt pose
+    float mid_theta = old_theta + delta_rot1;
     float G[9] = {
-        1, 0, -delta_trans * sin(old_theta + delta_rot1),
-        0, 1, delta_trans * cos(old_theta + delta_rot1),
-        0, 0, 1
+        1, 0, -delta_trans * sin(mid_theta),
+        0, 1,  delta_trans * cos(mid_theta),
+        0, 0,  1
     };
 
     // jacobian of the motion model wrt control
     float V[9] = {
-        -delta_trans * sin(old_theta + delta_rot1), cos(old_theta + delta_rot1), -delta_trans * sin(old_theta + delta_rot1),
-         delta_trans * cos(old_theta + delta_rot1), sin(old_theta + delta_rot1),  delta_trans * cos(old_theta + delta_rot1),
+        -delta_trans * sin(mid_theta), cos(mid_theta), 0,
+         delta_trans * cos(mid_theta), sin(mid_theta), 0,
          1, 0, 1
     };
 
@@ -249,12 +259,12 @@ void updateOdometry() {
     float GT[9], VT[9];
     transposeMatrix3x3(G, GT);
     transposeMatrix3x3(V, VT);
-
+    // Sigma' = GT * Sigma * G + V * M * VT
     float temp1[9], temp2[9], temp3[9], temp4[9];
-    matrixMultiply3x3(GT, Sigma, temp1); // GT * Sigma
-    matrixMultiply3x3(temp1, G, temp2); // GT * Sigma * G
-    matrixMultiply3x3(V, M, temp3); // V * M
-    matrixMultiply3x3(temp3, VT, temp4); // GT * Sigma * G * V * M
+    matrixMultiply3x3(G, Sigma, temp1);     // G * Σ
+    matrixMultiply3x3(temp1, GT, temp2);    // G * Σ * G^T (process uncertainty)
+    matrixMultiply3x3(V, M, temp3);         // V * M
+    matrixMultiply3x3(temp3, VT, temp4);    // V * M * V^T (motion noise)
 
     for (int i = 0; i < 9; i++) {
         temp2[i] += temp4[i]; // Sigma' = GT * Sigma * G + V * M * VT
@@ -265,6 +275,11 @@ void updateOdometry() {
     covariance[0] = max(covariance[0], 1e-6f); // σxx
     covariance[3] = max(covariance[3], 1e-6f); // σyy
     covariance[5] = max(covariance[5], 1e-6f); // σθθ
+
+// if (fabs(delta_trans) > 0.001 || fabs(delta_rot) > 0.001) {
+//         Serial.printf("Motion: dL=%.4f, dR=%.4f, dTrans=%.4f, dRot=%.4f\n", 
+//                       dSLeft, dSRight, delta_trans, delta_rot);
+//     }
 }
 
 // sample from current pose with noise
@@ -296,27 +311,20 @@ void resetOdometry() {
 }
 
 void printPose() {
+
     // Serial.print("Robot Pose - X: "); 
     // Serial.print(robot_x, 4);
+    // Serial.print(" ± "); 
+    // Serial.print(sqrt(covariance[0]), 4);
     // Serial.print(" m, Y: "); 
     // Serial.print(robot_y, 4);
+    // Serial.print(" ± "); 
+    // Serial.print(sqrt(covariance[3]), 4);
     // Serial.print(" m, Theta: "); 
     // Serial.print(robot_theta * 180.0 / PI, 2);
+    // Serial.print(" ± "); 
+    // Serial.print(sqrt(covariance[5]) * 180.0 / PI, 2);
     // Serial.println(" degrees");
-
-    Serial.print("Robot Pose - X: "); 
-    Serial.print(robot_x, 4);
-    Serial.print(" ± "); 
-    Serial.print(sqrt(covariance[0]), 4);
-    Serial.print(" m, Y: "); 
-    Serial.print(robot_y, 4);
-    Serial.print(" ± "); 
-    Serial.print(sqrt(covariance[3]), 4);
-    Serial.print(" m, Theta: "); 
-    Serial.print(robot_theta * 180.0 / PI, 2);
-    Serial.print(" ± "); 
-    Serial.print(sqrt(covariance[5]) * 180.0 / PI, 2);
-    Serial.println(" degrees");
 
     // UDP output
     char buffer[150];

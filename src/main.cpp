@@ -14,7 +14,7 @@
 #include <Adafruit_BNO055.h>
 #include "odometry.h"
 #include <string.h>
-#include "webpage.h"
+#include "pid_webpage.h"
 
 WebServer server(80);
 
@@ -50,9 +50,9 @@ volatile long ticksR = 0;
 volatile long ticksT = 0;
 
 // PID constants for synchronization
-const float Kp_sync = 0.0;
-const float Ki_sync = 0.0;
-const float Kd_sync = 0.0;
+float Kp_sync = 295.7;
+float Ki_sync = 60.8;
+float Kd_sync = 0.0f;
 
 // Encoder & motor specs
 const int CPR = 64;
@@ -82,6 +82,9 @@ unsigned long lastTurretTime = 0; // Last time turret PID was updated
 // PWM limits
 const int minPWM = 200;   // Minimum PWM value
 const int maxPWM = 4095; // Maximum PWM value (12-bit resolution)
+const int maxPWM_D = 4095;
+float pwmL_out = 0.0;
+float pwmR_out = 0.0;
 
 // Control interval (ms)
 const unsigned long PID_INTERVAL = 50;
@@ -98,10 +101,12 @@ long lastTicksL = 0;
 long lastTicksR = 0;
 
 // Base PWM speed (0-4095)
-float basePWM = 4095;
+float basePWM = 3500;
 float pwmT_out = 0;
-float scaleFactor = 131.67;
+float scaleFactor = 1.0; //131.67;
 // float turretSpeed = 0.0;
+
+float test = 0.0f;
 
 // Joystick control variables
 float ly = 0.0f;  // left stick vertical (forward/back)
@@ -204,7 +209,7 @@ void setup() {
   Serial.println(myIP);
 
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", webpage);  // Serve the HTML page
+    server.send(200, "text/html", pid_webpage);  // Serve the HTML page
   });
   
   server.on("/move", HTTP_GET, []() {
@@ -229,6 +234,28 @@ void setup() {
     targetTurretAngle = inputTurretAngle * turretGearRatio; // Apply gear ratio
     server.send(200, "text/plain", "Turret angle set.");
   });
+
+  // GET current values (already suggested)
+  server.on("/getPID", HTTP_GET, []() {
+    String json = "{";
+    json += "\"Kp\":" + String(Kp_sync) + ",";
+    json += "\"Ki\":" + String(Ki_sync) + ",";
+    json += "\"Kd\":" + String(Kd_sync) + ",";
+    json += "\"Test\":" + String(test, 4); // 4 decimals for float
+    json += "}";
+    server.send(200, "application/json", json);
+});
+
+  // POST updates
+  server.on("/updatePID", HTTP_POST, []() {
+    if (server.hasArg("Kp")) Kp_sync = server.arg("Kp").toFloat();
+    if (server.hasArg("Ki")) Ki_sync = server.arg("Ki").toFloat();
+    if (server.hasArg("Kd")) Kd_sync = server.arg("Kd").toFloat();
+    if (server.hasArg("Test")) test = server.arg("Test").toFloat();
+    String response = "Updated PID values:\nKp=" + String(Kp_sync) + "\nKi=" + String(Ki_sync) + "\nKd=" + String(Kd_sync) +
+                      "\nTest=" + String(test, 4);
+    server.send(200, "text/plain", response);
+});
 
   server.onNotFound([]() {
     server.send(404, "text/plain", "404 Not Found");
@@ -350,7 +377,13 @@ void loop() {
     // Calculate error between motors (left RPM minus right RPM)
     float errorSync = (rpmL - rpmR) * scaleFactor;
 
-    integralSync += errorSync * dt;
+    bool satL = (pwmL_out >=  maxPWM_D) || (pwmL_out <= -maxPWM_D);
+    bool satR = (pwmR_out >=  maxPWM_D) || (pwmR_out <= -maxPWM_D);
+    if (satL || satR) {
+      // simple backoff: undo last integration step
+      integralSync -= errorSync * dt;
+    }
+
     integralSync = constrain(integralSync, -100, 100);
     float dErrorSync = (errorSync - lastErrorSync) / dt;
 
@@ -421,14 +454,19 @@ void loop() {
     float forward = useUdp ? ly : joyY;
     float turn = useUdp ? rx : joyX;
 
+    // forward = 0.8;
+
     // Combine for left and right motor base PWM
     float pwmL_base = (forward + turn) * basePWM;
     float pwmR_base = (forward - turn) * basePWM;
 
     // Apply PID correction only to left motor PWM to sync speeds
     float correctionPWM = rawCorrection;
-    float pwmL_out = constrain(pwmL_base - correctionPWM, -4095, 4095);
-    float pwmR_out = constrain(pwmR_base, -4095, 4095);
+    float pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, 2662);
+    float pwmR_out = constrain(pwmR_base, -maxPWM_D, maxPWM_D);
+
+    // pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, maxPWM_D);
+    // pwmR_out = constrain(pwmR_base + correctionPWM, -maxPWM_D, maxPWM_D);
 
     // Set motor speeds
     setMotor(pwmL, dirL, pwmL_out, 0);
@@ -456,21 +494,21 @@ void loop() {
     updateOdometry();
 
     static unsigned long lastDetailedPrint = 0;
-    if (now - lastDetailedPrint >= 5000) { // Print every 1-second
+    if (now - lastDetailedPrint >= 1000) { // Print every 1-second
       Serial.println("\n PROBABILISTIC ODOM ESTIMATION:");
       printPose();
-      printMotionModel();
+      // printMotionModel();
 
       static unsigned long lastCovPrint = 0;
       if (now - lastCovPrint >= 5000) { // Print covariance every 5 seconds
-        printCovariance();
+        // printCovariance();
         lastCovPrint = now;
       }
 
       float sample_x, sample_y, sample_theta;
       samplePose(sample_x, sample_y, sample_theta); 
-      Serial.printf("Sampled Pose: X=%.2f, Y=%.2f, Theta=%.2f\n", sample_x, sample_y, sample_theta * 180.0 / PI);
-      Serial.println("--------------------------------------------------");
+      // Serial.printf("Sampled Pose: X=%.2f, Y=%.2f, Theta=%.2f\n", sample_x, sample_y, sample_theta * 180.0 / PI);
+      // Serial.println("--------------------------------------------------");
       lastDetailedPrint = now;
     }
     lastOdometryTime = now;

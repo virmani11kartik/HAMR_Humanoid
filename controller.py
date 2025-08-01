@@ -3,11 +3,14 @@ import socket
 import serial
 import time
 import select
+import csv
+import datetime
+import re
+import matplotlib.pyplot as plt
 
 # # Change COM to your ESP32 port
 # ser = serial.Serial('COM4', 115200, timeout=0.1)
 # time.sleep(2)  # wait for ESP to reset
-
 
 # === Update with the ESP32's IP printed on Serial Monitor ===
 ESP32_IP = "192.168.4.1"  # Replace with your ESP32 IP
@@ -27,8 +30,29 @@ joystick = pygame.joystick.Joystick(0)
 joystick.init()
 print(f"Connected to controller: {joystick.get_name()}")
 
+csv_file = open("controller_and_pose_log.csv", mode="w", newline="")
+csv_writer = csv.writer(csv_file)
+csv_writer.writerow([
+    "timestamp",
+    "LX", "LY", "RX", "RY", "LT", "RT", "A", "B",
+    "pose_x", "pose_x_std", "pose_y", "pose_y_std", "pose_theta", "pose_theta_std"
+])
+
+plt.ion()
+fig, ax = plt.subplots()
+trajectory_x = []
+trajectory_y = []
+traj_plot, = ax.plot([], [], 'b.-', label='Trajectory')
+ax.set_xlabel("X [m]")
+ax.set_ylabel("Y [m]")
+ax.set_title("Real-Time Robot Trajectory")
+ax.grid(True)
+ax.legend()
+plt.show()
+
 try:
     while True:
+        updated = False 
         pygame.event.pump()  # Updates internal state
 
         # Get left stick X and Y
@@ -60,6 +84,9 @@ try:
         # ser.write((msg + '\n').encode())
         sock.sendto(msg.encode(), (ESP32_IP, ESP32_PORT))
 
+        timestamp = datetime.datetime.now().isoformat(timespec='milliseconds')
+        pose_x = pose_x_std = pose_y = pose_y_std = pose_theta = pose_theta_std = None
+
         # Print what you send
         # print("Sent:", msg)
 
@@ -73,7 +100,31 @@ try:
         ready = select.select([sock], [], [], 0)
         if ready[0]:
             data, addr = sock.recvfrom(1024)
-            print("Received from ESP32:", data.decode().strip())
+            msg_received = data.decode().strip()
+            print("Received from HAMR:", msg_received)
+
+            match = re.search(
+                r"X:\s*([-\d\.]+)\s*±\s*([-\d\.]+)\s*m,\s*Y:\s*([-\d\.]+)\s*±\s*([-\d\.]+)\s*m,\s*Theta:\s*([-\d\.]+)\s*±\s*([-\d\.]+)", msg_received)
+            if match:
+                pose_x, pose_x_std, pose_y, pose_y_std, pose_theta, pose_theta_std = map(float, match.groups())
+                if pose_x is not None and pose_y is not None:
+                    trajectory_x.append(pose_x)
+                    trajectory_y.append(pose_y)
+                    updated = True
+
+        if updated:
+            traj_plot.set_data(trajectory_x, trajectory_y)
+            ax.relim()
+            ax.autoscale_view()
+            plt.draw()
+            plt.pause(0.001)  # Refresh Rate
+            
+        csv_writer.writerow([
+        timestamp,
+        left_x, left_y, right_x, right_y, left_trigger, right_trigger, a, b,
+        pose_x, pose_x_std, pose_y, pose_y_std, pose_theta, pose_theta_std
+        ])
+        csv_file.flush()
 
         time.sleep(0.05)
 
@@ -82,5 +133,7 @@ except KeyboardInterrupt:
     # ser.close()
     pygame.quit()
     sock.close()
+    csv_file.close()
+    plt.close(fig)
 
 

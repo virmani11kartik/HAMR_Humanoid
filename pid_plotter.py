@@ -19,15 +19,19 @@ num_plots = len(selected_plots)
 if num_plots == 1:
     nrows, ncols = 1, 1
 elif num_plots == 2:
-    nrows, ncols = 2, 1
+    nrows, ncols = 1, 2
 elif num_plots == 3:
-    nrows, ncols = 3, 1
+    nrows, ncols = 2, 2
+elif num_plots == 4:
+    nrows, ncols = 2, 2
 else:
-    nrows, ncols = 4, 4  # fallback for 4 or more plots
+    nrows = (num_plots + 1) // 2
+    ncols = 2
 
 # Open serial port - update COM port as needed
-ser = serial.Serial('COM5', 115200, timeout=1)
+ser = serial.Serial('COM4', 115200, timeout=1)
 time.sleep(2)
+line = ser.readline()
 
 # Data buffers
 times = []
@@ -97,7 +101,10 @@ for j in range(len(selected_plots), len(axs)):
 
 # Regex pattern for serial input parsing
 pattern = re.compile(
-    r"L:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*R:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*PWM:\s*L=(\d+),\s*R=(\d+)\s*\|\s*Rot:\s*L=([0-9\.]+),\s*R=([0-9\.]+)"
+    r"L:\s*(-?\d+\.\d+)\s*RPM\s*\|\s*R:\s*(-?\d+\.\d+)\s*RPM\s*\|"
+    r"\s*Error_Turret:\s*(-?\d+\.\d+)\s*\|"
+    r"\s*PWM:\s*L=(\d+),\s*R=(\d+),\s*T=(\d+)\s*\|"
+    r"\s*Rot:\s*L=(-?\d+\.\d+),\s*R=(-?\d+\.\d+),\s*T_angle=(-?\d+\.\d+)"
 )
 
 try:
@@ -109,10 +116,14 @@ try:
         if match:
             rpmL = float(match.group(1))
             rpmR = float(match.group(2))
-            pwmL = int(match.group(3))
-            pwmR = int(match.group(4))
-            rotL = float(match.group(5))
-            rotR = float(match.group(6))
+            errorT = float(match.group(3))
+            pwmL = int(match.group(4))
+            pwmR = int(match.group(5))
+            pwmT = int(match.group(6))
+            rotL = float(match.group(7))
+            rotR = float(match.group(8))
+            t_angle = float(match.group(9))
+
 
             t = time.time() - start_time
 
@@ -144,6 +155,7 @@ try:
                 ax.autoscale_view()
 
             plt.pause(0.01)
+            print(f"Data: {line_str}")
 
 except KeyboardInterrupt:
     print("Plotting stopped by user")
