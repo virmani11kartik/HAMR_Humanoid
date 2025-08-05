@@ -50,8 +50,8 @@ volatile long ticksR = 0;
 volatile long ticksT = 0;
 
 // PID constants for synchronization
-float Kp_sync = 295.7;
-float Ki_sync = 60.8;
+float Kp_sync = 220.0;
+float Ki_sync = 80.0;
 float Kd_sync = 0.0f;
 
 // Encoder & motor specs
@@ -384,7 +384,7 @@ void loop() {
       integralSync -= errorSync * dt;
     }
 
-    integralSync = constrain(integralSync, -100, 100);
+    integralSync = constrain(integralSync, -300, 300);
     float dErrorSync = (errorSync - lastErrorSync) / dt;
 
     float rawCorrection = Kp_sync * errorSync + Ki_sync * integralSync + Kd_sync * dErrorSync;
@@ -454,15 +454,16 @@ void loop() {
     float forward = useUdp ? ly : joyY;
     float turn = useUdp ? rx : joyX;
 
-    // forward = 0.8;
+    forward = forward*0.8;
+    turn = turn*0.8;
 
     // Combine for left and right motor base PWM
-    float pwmL_base = (forward + turn) * basePWM;
+    float pwmL_base = (forward + turn) * basePWM - test;
     float pwmR_base = (forward - turn) * basePWM;
 
     // Apply PID correction only to left motor PWM to sync speeds
     float correctionPWM = rawCorrection;
-    float pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, 2662);
+    float pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, maxPWM_D);
     float pwmR_out = constrain(pwmR_base, -maxPWM_D, maxPWM_D);
 
     // pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, maxPWM_D);
@@ -492,6 +493,7 @@ void loop() {
   if(now- lastOdometryTime >= ODOMETRY_INTERVAL) {
     // Update odometry every ODOMETRY_INTERVAL ms
     updateOdometry();
+    // updateSampledPoseFromLastDelta();
 
     static unsigned long lastDetailedPrint = 0;
     if (now - lastDetailedPrint >= 1000) { // Print every 1-second

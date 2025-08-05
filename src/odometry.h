@@ -52,6 +52,10 @@ float robot_x = 0.0;                        // robot position in meters (renamed
 float robot_y = 0.0;
 float robot_theta = 0.0;                    // robot orientation in radians
 
+float sampled_x = 0.0;
+float sampled_y = 0.0;
+float sampled_theta = 0.0;
+
 // Covariance matrix for the robot pose
 // Stored as upper triangle: [σxx, σxy, σxθ, σyy, σyθ, σθθ]
 float covariance[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // initial covariance values
@@ -290,6 +294,21 @@ void samplePose(float &sample_x, float &sample_y, float &sample_theta) {
     // Normalize theta to [-PI, PI]
     while (sample_theta > PI) sample_theta -= 2.0 * PI;
     while (sample_theta < -PI) sample_theta += 2.0 * PI;
+}
+
+// FOR PARTCLE FILTER CHAIN SAMPLING
+void updateSampledPoseFromLastDelta() {
+    float noisy_rot1  = last_delta_rot1 + gaussianRandom(0.0, sqrt(ALPHA1 * fabs(last_delta_rot1) + ALPHA2 * fabs(last_delta_trans)));
+    float noisy_trans = last_delta_trans + gaussianRandom(0.0, sqrt(ALPHA3 * fabs(last_delta_trans) + ALPHA4 * (fabs(last_delta_rot1) + fabs(last_delta_rot2))));
+    float noisy_rot2  = last_delta_rot2 + gaussianRandom(0.0, sqrt(ALPHA1 * fabs(last_delta_rot2) + ALPHA2 * fabs(last_delta_trans)));
+
+    robot_x += noisy_trans * cos(robot_theta + noisy_rot1);
+    robot_y += noisy_trans * sin(robot_theta + noisy_rot1);
+    robot_theta += noisy_rot1 + noisy_rot2;
+
+    // Normalize angle
+    while (robot_theta > PI) robot_theta -= 2.0 * PI;
+    while (robot_theta < -PI) robot_theta += 2.0 * PI;
 }
 
 void resetOdometry() {
