@@ -6,6 +6,7 @@
 #include <esp32-hal-ledc.h>
 #include <WiFi.h>   
 #include <WiFiUdp.h>
+#include <stdint.h>
 
 extern const int CPR;
 extern const int GEAR_RATIO;
