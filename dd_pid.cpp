@@ -50,9 +50,8 @@ volatile long ticksR = 0;
 volatile long ticksT = 0;
 
 // PID constants for synchronization
-float Kp_sync = 220.0;
-float Ki_sync = 80.0;
-float Kd_sync = 0.0f;
+float Kp_L = 120.0f, Ki_L = 40.0f, Kd_L = 0.0f;   // tune per wheel
+float Kp_R = 120.0f, Ki_R = 40.0f, Kd_R = 0.0f;   // tune per wheel
 
 // Encoder & motor specs
 const int CPR = 64;
@@ -91,8 +90,8 @@ const unsigned long PID_INTERVAL = 50;
 static unsigned long lastUdpTime = 0;
 
 // PID state variables
-float integralSync = 0;
-float lastErrorSync = 0;
+float integralL = 0.0f, integralR = 0.0f;
+float lastErrL = 0.0f, lastErrR = 0.0f;
 float errorT = 0;
 
 // Timing variables
@@ -102,6 +101,7 @@ long lastTicksR = 0;
 
 // Base PWM speed (0-4095)
 float basePWM = 3500;
+const float MAX_RPM_CMD = 28.0f;
 float pwmT_out = 0;
 float scaleFactor = 1.0; //131.67;
 // float turretSpeed = 0.0;
@@ -238,9 +238,9 @@ void setup() {
   // GET current values (already suggested)
   server.on("/getPID", HTTP_GET, []() {
     String json = "{";
-    json += "\"Kp\":" + String(Kp_sync) + ",";
-    json += "\"Ki\":" + String(Ki_sync) + ",";
-    json += "\"Kd\":" + String(Kd_sync) + ",";
+    json += "\"Kp\":" + String(Kp_L) + ",";
+    json += "\"Ki\":" + String(Ki_L) + ",";
+    json += "\"Kd\":" + String(Kd_L) + ",";
     json += "\"Test\":" + String(test, 4); // 4 decimals for float
     json += "}";
     server.send(200, "application/json", json);
@@ -248,11 +248,11 @@ void setup() {
 
   // POST updates
   server.on("/updatePID", HTTP_POST, []() {
-    if (server.hasArg("Kp")) Kp_sync = server.arg("Kp").toFloat();
-    if (server.hasArg("Ki")) Ki_sync = server.arg("Ki").toFloat();
-    if (server.hasArg("Kd")) Kd_sync = server.arg("Kd").toFloat();
+    if (server.hasArg("Kp")) Kp_L = server.arg("Kp").toFloat();
+    if (server.hasArg("Ki")) Ki_L = server.arg("Ki").toFloat();
+    if (server.hasArg("Kd")) Kd_L = server.arg("Kd").toFloat();
     if (server.hasArg("Test")) test = server.arg("Test").toFloat();
-    String response = "Updated PID values:\nKp=" + String(Kp_sync) + "\nKi=" + String(Ki_sync) + "\nKd=" + String(Kd_sync) +
+    String response = "Updated PID values:\nKp=" + String(Kp_L) + "\nKi=" + String(Ki_L) + "\nKd=" + String(Kd_L) +
                       "\nTest=" + String(test, 4);
     server.send(200, "text/plain", response);
 });
@@ -355,11 +355,12 @@ void loop() {
         }
     }
 
-  // PID loop timing
+  ////=======================PID loop timing==================////
   unsigned long now = millis();
   if (now - lastPidTime >= PID_INTERVAL) {
     float dt = (now - lastPidTime) / 1000.0;
 
+    ////=================== DRIVE CONTROL =================////
     // Read encoder counts atomically
     noInterrupts();
     long currentTicksL = ticksL;
@@ -374,22 +375,58 @@ void loop() {
     lastTicksR = currentTicksR;
     lastPidTime = now;
 
-    // Calculate error between motors (left RPM minus right RPM)
-    float errorSync = (rpmL - rpmR) * scaleFactor;
+    // Joystick-based differential drive control:
+    // Negative ly because joystick up may be negative, adjust if needed
+    // Normalize joystick values to -1 to 1 range
+    // float forward = ly;  
+    // float turn = rx;
 
+    // // HTTML Joystick control
+    // float forward = joyY;  // Forward/backward control from joystick
+    // float turn = joyX;     // Left/right control from joystick
+
+    bool useUdp = (millis() - lastUdpTime < 100);
+    float forward = useUdp ? ly : joyY;
+    float turn = useUdp ? rx : joyX;
+
+    forward = 0.8f;
+    turn    *= 0.8f;
+
+    // Combine for left and right motor base PWM
+    float rpmTargetL = (forward + turn) * MAX_RPM_CMD;
+    float rpmTargetR = (forward - turn) * MAX_RPM_CMD;
+
+    float pwmFF_L = (forward + turn) * basePWM;
+    float pwmFF_R = (forward - turn) * basePWM;
+
+    // Calculate error in motord
+    float errL = rpmTargetL - rpmL;
+    float errR = rpmTargetR - rpmR;
+    
     bool satL = (pwmL_out >=  maxPWM_D) || (pwmL_out <= -maxPWM_D);
     bool satR = (pwmR_out >=  maxPWM_D) || (pwmR_out <= -maxPWM_D);
-    if (satL || satR) {
-      // simple backoff: undo last integration step
-      integralSync -= errorSync * dt;
-    }
+    if (!satL) integralL += errL * dt;
+    if (!satR) integralR += errR * dt;
 
-    integralSync = constrain(integralSync, -300, 300);
-    float dErrorSync = (errorSync - lastErrorSync) / dt;
+    // Clamp integrators a bit
+    integralL = constrain(integralL, -300.0f, 300.0f);
+    integralR = constrain(integralR, -300.0f, 300.0f);
+    float dErrL = (errL - lastErrL) / dt;
+    float dErrR = (errR - lastErrR) / dt;
+    lastErrL = errL;
+    lastErrR = errR;
 
-    float rawCorrection = Kp_sync * errorSync + Ki_sync * integralSync + Kd_sync * dErrorSync;
-    lastErrorSync = errorSync;
+    float deltaPWM_L = Kp_L * errL + Ki_L * integralL + Kd_L * dErrL;
+    float deltaPWM_R = Kp_R * errR + Ki_R * integralR + Kd_R * dErrR;
 
+    // 4) Final PWM = feed-forward + PID correction, with saturation & deadband
+    pwmL_out = constrain(rpmTargetL + deltaPWM_L, -maxPWM_D, maxPWM_D);
+    pwmR_out = constrain(rpmTargetR + deltaPWM_R, -maxPWM_D, maxPWM_D);
+
+    if (fabsf(pwmL_out) < minPWM) pwmL_out = 0.0f;
+    if (fabsf(pwmR_out) < minPWM) pwmR_out = 0.0f;
+
+    ////=================== TURRET CONTROL =================////
     if (btn == "l") {
       pwmT_out = -value * maxPWM;
     } else if (btn == "r") {
@@ -440,39 +477,13 @@ void loop() {
       pwmT_out = 0;
     }
 
-    // Joystick-based differential drive control:
-    // Negative ly because joystick up may be negative, adjust if needed
-    // Normalize joystick values to -1 to 1 range
-    // float forward = ly;  
-    // float turn = rx;
-
-    // // HTTML Joystick control
-    // float forward = joyY;  // Forward/backward control from joystick
-    // float turn = joyX;     // Left/right control from joystick
-
-    bool useUdp = (millis() - lastUdpTime < 100);
-    float forward = useUdp ? ly : joyY;
-    float turn = useUdp ? rx : joyX;
-
-    forward = forward*0.8;
-    turn = turn*0.8;
-
-    // Combine for left and right motor base PWM
-    float pwmL_base = (forward + turn) * basePWM - test;
-    float pwmR_base = (forward - turn) * basePWM;
-
-    // Apply PID correction only to left motor PWM to sync speeds
-    float correctionPWM = rawCorrection;
-    float pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, maxPWM_D);
-    float pwmR_out = constrain(pwmR_base, -maxPWM_D, maxPWM_D);
-
-    // pwmL_out = constrain(pwmL_base - correctionPWM, -maxPWM_D, maxPWM_D);
-    // pwmR_out = constrain(pwmR_base + correctionPWM, -maxPWM_D, maxPWM_D);
+    //// ======================== CONTROL END ===================////
 
     // Set motor speeds
     setMotor(pwmL, dirL, pwmL_out, 0);
     setMotor(pwmR, dirR, pwmR_out, 1);
     setMotor(pwmT, dirT, pwmT_out, 2);
+
     // Calculate rotations
     float rotL = currentTicksL / (float)TICKS_PER_WHEEL_REV;
     float rotR = currentTicksR / (float)TICKS_PER_WHEEL_REV;
@@ -489,6 +500,8 @@ void loop() {
     // sendUDP(status);
 
   }
+
+  /////// ================= LOCALIZATION START =====================////
 
   if(now- lastOdometryTime >= ODOMETRY_INTERVAL) {
     // Update odometry every ODOMETRY_INTERVAL ms

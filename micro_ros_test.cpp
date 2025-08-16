@@ -227,3 +227,169 @@ void loop() {
     Serial0.write((uint8_t*)&pkt, PKT_SIZE);
   }
 }
+
+
+
+#include <Arduino.h>
+
+// ----------------- Protocol -----------------
+static const uint16_t MAGIC = 0xCAFE;
+static const uint16_t VER   = 1;
+static const uint16_t TYPE_CMD  = 0x0001; // PC->ESP : left,right
+static const uint16_t TYPE_CMD3 = 0x0011; // PC->ESP : left,right,turret
+static const uint16_t TYPE_ENC  = 0x0002; // ESP->PC : encoders
+
+#pragma pack(push,1)
+struct CmdPacket {
+  uint16_t magic, ver, type;
+  uint32_t seq;
+  uint64_t t_tx_ns;
+  float left, right;
+  uint16_t crc16;
+};
+struct Cmd3Packet {
+  uint16_t magic, ver, type;
+  uint32_t seq;
+  uint64_t t_tx_ns;
+  float left, right, turret;
+  uint16_t crc16;
+};
+struct EncPacket {
+  uint16_t magic, ver, type;
+  uint32_t seq;
+  uint64_t t_tx_ns;
+  int32_t ticksL, ticksR;
+  uint16_t crc16;
+};
+#pragma pack(pop)
+
+static const size_t CMD_SIZE  = sizeof(CmdPacket);   // 2-float
+static const size_t CMD3_SIZE = sizeof(Cmd3Packet);  // 3-float
+static const size_t ENC_SIZE  = sizeof(EncPacket);
+
+// CRC32->16 surrogate (must match PC side)
+uint16_t crc16_surrogate(const uint8_t* data, size_t n) {
+  uint32_t c = 0xFFFFFFFFu;
+  for (size_t i=0;i<n;i++) {
+    c ^= data[i];
+    for (int k=0;k<8;k++) {
+      c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+    }
+  }
+  c ^= 0xFFFFFFFFu;
+  return (uint16_t)(c & 0xFFFF);
+}
+
+// ---- Your encoder sources (replace with ISR counters) ----
+volatile int32_t ticksL = 0;
+volatile int32_t ticksR = 0;
+
+// ---- Motor command hooks ----
+void setMotorCommands(float left, float right) {
+  // TODO: map to PWM/driver
+  Serial.printf("CMD L=%.3f R=%.3f\n", left, right);
+}
+void setTurret(float turret) {
+  // TODO: map to turret motor
+  Serial.printf("TUR=%.3f\n", turret);
+}
+
+void setup() {
+  Serial.begin(115200);   // USB CDC logs
+  Serial0.begin(460800);  // UART to Pi/PC
+  Serial.println("ESP32 bidirectional UART ready.");
+}
+
+void loop() {
+  // ---- RX: parse commands (robust to CMD or CMD3) ----
+  static uint8_t buf[64];      // big enough for CMD3 (48 bytes) + slack
+  static size_t  have = 0;
+
+  // accumulate
+  while (Serial0.available() && have < sizeof(buf)) {
+    buf[have++] = (uint8_t)Serial0.read();
+  }
+
+  // try to parse while we have at least a header
+  while (have >= 6) { // magic(2)+ver(2)+type(2)
+    uint16_t magic = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+    if (magic != MAGIC) {
+      // resync: drop 1 byte
+      memmove(buf, buf+1, --have);
+      continue;
+    }
+    uint16_t ver  = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
+    uint16_t type = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+
+    size_t need = 0;
+    if (ver != VER) {
+      memmove(buf, buf+1, --have);
+      continue;
+    }
+    if (type == TYPE_CMD)      need = CMD_SIZE;
+    else if (type == TYPE_CMD3)need = CMD3_SIZE;
+    else {
+      // unknown type; drop 1 byte
+      memmove(buf, buf+1, --have);
+      continue;
+    }
+
+    if (have < need) break; // need more bytes
+
+    // we have a full frame
+    if (type == TYPE_CMD && need == CMD_SIZE) {
+      CmdPacket cmd;
+      memcpy(&cmd, buf, CMD_SIZE);
+      uint16_t calc = crc16_surrogate((uint8_t*)&cmd, CMD_SIZE - 2);
+      if (calc == cmd.crc16) {
+        setMotorCommands(cmd.left, cmd.right);
+      }
+      else {
+        Serial.println("CRC fail (CMD)"); // optional
+      }
+      memmove(buf, buf + CMD_SIZE, have - CMD_SIZE);
+      have -= CMD_SIZE;
+    } else if (type == TYPE_CMD3 && need == CMD3_SIZE) {
+      Cmd3Packet cmd3;
+      memcpy(&cmd3, buf, CMD3_SIZE);
+      uint16_t calc = crc16_surrogate((uint8_t*)&cmd3, CMD3_SIZE - 2);
+      if (calc == cmd3.crc16) {
+        setMotorCommands(cmd3.left, cmd3.right);
+        setTurret(cmd3.turret);
+      }
+      else {
+        Serial.println("CRC fail (CMD3)");
+      }
+      memmove(buf, buf + CMD3_SIZE, have - CMD3_SIZE);
+      have -= CMD3_SIZE;
+    } else {
+      // shouldn’t happen; resync
+      memmove(buf, buf+1, --have);
+    }
+  }
+
+  // ---- TX: send encoder ticks @ 100 Hz ----
+  static uint32_t last_tx_ms = 0;
+  if (millis() - last_tx_ms >= 10) {
+    last_tx_ms = millis();
+
+    EncPacket enc;
+    enc.magic   = MAGIC;
+    enc.ver     = VER;
+    enc.type    = TYPE_ENC;
+    static uint32_t enc_seq = 0;
+    enc.seq     = ++enc_seq;
+    enc.t_tx_ns = (uint64_t)micros() * 1000ull;
+
+    noInterrupts();
+    enc.ticksL = ticksL;
+    enc.ticksR = ticksR;
+    interrupts();
+
+    enc.crc16 = crc16_surrogate((uint8_t*)&enc, ENC_SIZE - 2);
+
+    Serial0.write((uint8_t*)&enc, ENC_SIZE);
+    // Optional log:
+    // Serial.printf("ENC seq=%u L=%ld R=%ld\n", enc.seq, (long)enc.ticksL, (long)enc.ticksR);
+  }
+}
