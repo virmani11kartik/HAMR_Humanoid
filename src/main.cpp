@@ -99,6 +99,7 @@ float errorT = 0;
 unsigned long lastPidTime = 0;
 long lastTicksL = 0;
 long lastTicksR = 0;
+long lastTicksT = 0;
 
 // Base PWM speed (0-4095)
 float basePWM = 3500;
@@ -131,7 +132,7 @@ static const uint16_t MAGIC = 0xCAFE;
 static const uint16_t VER   = 1;
 static const uint16_t TYPE_CMD  = 0x0001; // PC->ESP : left,right
 static const uint16_t TYPE_CMD3 = 0x0011; // PC->ESP : left,right,turret
-static const uint16_t TYPE_ENC  = 0x0002; // ESP->PC : encoders
+static const uint16_t TYPE_ENC  = 0x0003; // ESP->PC : encoders
 // Latest commands received over UART (ROS)
 volatile float uart_left_cmd = 0.0f;
 volatile float uart_right_cmd = 0.0f;
@@ -160,7 +161,7 @@ struct EncPacket {
   uint16_t magic, ver, type;
   uint32_t seq;
   uint64_t t_tx_ns;
-  int32_t ticksL, ticksR;
+  int32_t ticksL, ticksR, ticksT;
   uint16_t crc16;
 };
 
@@ -170,7 +171,7 @@ static const size_t CMD_SIZE  = sizeof(CmdPacket);   // 2-float
 static const size_t CMD3_SIZE = sizeof(Cmd3Packet);  // 3-float
 static const size_t ENC_SIZE  = sizeof(EncPacket);
 
-// CRC32->16 surrogate (must match PC side)
+// CRC32->16 surrogate (must match Pi side)
 uint16_t crc16_surrogate(const uint8_t* data, size_t n) {
   uint32_t c = 0xFFFFFFFFu;
   for (size_t i=0;i<n;i++) {
@@ -187,7 +188,7 @@ uint16_t crc16_surrogate(const uint8_t* data, size_t n) {
 constexpr float WHEEL_RADIUS_M = 0.0762f;      // your wheel radius
 constexpr float MAX_WHEEL_RPM  = 30.0f;       // safety clamp (tune)
 enum WheelCmdUnits { CMD_MPS, CMD_RAD_PER_S, CMD_RPM };
-constexpr WheelCmdUnits CMD_UNITS = CMD_MPS;   // ROS cmd units
+constexpr WheelCmdUnits CMD_UNITS = CMD_RAD_PER_S;   // ROS cmd units
 
 inline float wheel_rpm_from_cmd(float v) {
   switch (CMD_UNITS) {
@@ -514,11 +515,14 @@ void loop() {
     noInterrupts();
     long currentTicksL = ticksL;
     long currentTicksR = ticksR;
+    long currentTicksT = ticksT;
     interrupts();
 
     // Calculate RPM for each motor
     float rpmL = ((currentTicksL - lastTicksL) / dt) * 60.0 / TICKS_PER_WHEEL_REV;
     float rpmR = ((currentTicksR - lastTicksR) / dt) * 60.0 / TICKS_PER_WHEEL_REV;
+    float rpmT = ((currentTicksT - lastTicksT) / dt) * 60.0 / TICKS_PER_TURRET_REV;
+    float rpmT_platform = rpmT * turretGearRatio; // Platform RPM
 
     lastTicksL = currentTicksL;
     lastTicksR = currentTicksR;
@@ -533,7 +537,7 @@ void loop() {
       enc.magic = MAGIC; enc.ver = VER; enc.type = TYPE_ENC;
       enc.seq = ++enc_seq;
       enc.t_tx_ns = (uint64_t)micros() * 1000ull;
-      noInterrupts(); enc.ticksL = ticksL; enc.ticksR = ticksR; interrupts();
+      noInterrupts(); enc.ticksL = ticksL; enc.ticksR = ticksR; enc.ticksT = ticksT; interrupts();
       enc.crc16 = crc16_surrogate((uint8_t*)&enc, ENC_SIZE - 2);
 
       Serial0.write((uint8_t*)&enc, ENC_SIZE); // binary out on the data UART
@@ -575,11 +579,11 @@ void loop() {
     turn    *= 0.8f;
 
     // Combine for left and right motor base PWM
-    float rpmTargetL = (forward + turn) * MAX_RPM_CMD;
-    float rpmTargetR = (forward - turn) * MAX_RPM_CMD;
+    rpmTargetL = (forward + turn) * MAX_RPM_CMD;
+    rpmTargetR = (forward - turn) * MAX_RPM_CMD;
 
-    float pwmFF_L = (forward + turn) * basePWM;
-    float pwmFF_R = (forward - turn) * basePWM;
+    pwmFF_L = (forward + turn) * basePWM;
+    pwmFF_R = (forward - turn) * basePWM;
     }
 
     // Calculate error in motord
@@ -619,12 +623,28 @@ void loop() {
     }
     setMotor(pwmT, dirT, pwmT_out, 2);
     
-    // if (useUart) {
-    //   // Assume turret cmd is [-1..1] velocity command. If it's rad/s, add a scale.
-    //   const float TURRET_Kv = maxPWM;  // simple proportional map; tune this
-    //   pwmT_out = clamp(uart_turret_cmd * TURRET_Kv, -maxPWM, maxPWM);
-    // }
-    if (lt > 0.1 || rt > 0.1){
+    if (useUart) {
+      // UART cmd is platform angular velocity [rad/s]
+      const float target_rpm_T_platform = wheel_rpm_from_cmd(uart_turret_cmd) * (60.0f / (2.0f * (float)M_PI));
+
+      // Simple PI on platform velocity
+      static float integTv = 0.0f;
+      const float KpTv = 120.0f;   // tune
+      const float KiTv = 20.0f;    // tune
+
+      float errTv = target_rpm_T_platform - rpmT_platform;
+      integTv += errTv * dt;
+      integTv = constrain(integTv, -100.0f, 100.0f);
+
+      float pwm_cmd = KpTv * errTv + KiTv * integTv;
+      pwmT_out = constrain(pwm_cmd, -maxPWM, maxPWM);
+      if (fabsf(pwmT_out) < 400.0f) pwmT_out = 0.0f;
+
+      // Angle reporting for status (platform degrees):
+      currentAngleT = (ticksT * DEGREES_PER_TURRET_TICK) / turretGearRatio;
+      currentAngleT = fmodf(currentAngleT, 360.0f);
+    }
+    if (lt > 0.1f || rt > 0.1f){
     // Simple turret control based on triggers
       targetTurretAngle = 0.0;
       float turretSpeed = (lt > 0.1) ? -lt * maxPWM : rt * maxPWM;
@@ -632,7 +652,7 @@ void loop() {
       currentAngleT = ticksT * DEGREES_PER_TURRET_TICK; // Calculate turret angle in degrees
       currentAngleT = fmod(currentAngleT/turretGearRatio, 360.0);
     }
-    else if (abs(targetTurretAngle)) {
+    else if (fabs(targetTurretAngle)>0.0f) {
       // Turret PID control
       // Read turret encoder counts atomically
       noInterrupts();
