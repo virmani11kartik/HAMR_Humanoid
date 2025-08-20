@@ -1,3 +1,7 @@
+# LINK TO HIGH LEVEL PLANNER REPO IN ROS2
+https://github.com/cedrichld/hamr_holonomic_robot/tree/kartik
+
+# LOW LEVEL PLANNER SOURCE CODE IN THIS REPO
 # HOLONOMIC AFFORDABLE MOBILE ROBOT (HAMR) at University of Pennsylvania MODLAB
 Overview:
 HAMR is a modular holonomic mobile robot designed for agile, off-road locomotion with a self-balancing torso. This project focuses on mechanical robustness, precise control, and real-time localization.
