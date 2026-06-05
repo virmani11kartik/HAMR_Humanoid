@@ -129,7 +129,9 @@ void IMU55::updateStatus() {
 }
 
 void IMU55::update() {
-  bno_.getEvent(&e_, Adafruit_BNO055::VECTOR_EULER);
+  bno_.getEvent(&e_,       Adafruit_BNO055::VECTOR_EULER);
+  bno_.getEvent(&e_accel_, Adafruit_BNO055::VECTOR_LINEARACCEL);
+  bno_.getEvent(&e_gyro_,  Adafruit_BNO055::VECTOR_GYROSCOPE);
 
   uint8_t sys=0,g=0,a=0,m=0;
   bno_.getCalibration(&sys,&g,&a,&m);
@@ -162,6 +164,18 @@ void IMU55::getRPY(float& roll, float& pitch, float& yaw) {
   while (yaw < -M_PI) yaw += 2.0f * M_PI;
   roll = e_.orientation.y * M_PI / 180.0f;
   pitch = e_.orientation.z * M_PI / 180.0f;
+}
+
+void IMU55::getLinearAccel(float& ax, float& ay, float& az) {
+  ax = e_accel_.acceleration.x;
+  ay = e_accel_.acceleration.y;
+  az = e_accel_.acceleration.z;
+}
+
+void IMU55::getAngularVel(float& gx, float& gy, float& gz) {
+  gx = e_gyro_.gyro.x;
+  gy = e_gyro_.gyro.y;
+  gz = e_gyro_.gyro.z;
 }
 
 bool IMU55::isCalibrated() {

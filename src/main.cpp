@@ -13,12 +13,10 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 #include <Adafruit_BNO08x.h>
-#include "odometry.h"
 #include <string.h>
 #include "pid_webpage.h"
 #include "imu_55.h"
 #include "imu_85.h"
-#include "ekf_localization.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <Adafruit_VL53L0X.h>
@@ -35,13 +33,13 @@ float roll_b,pitch_b,yaw_b;
 // ===== IMU ↔ control =====
 volatile float    g_yaw_latest = 0.0f;      // last IMU yaw (wrapped)
 volatile uint32_t g_yaw_latest_us = 0;      // micros() when last sample arrived
+volatile float g_roll_latest = 0.0f;
+volatile float g_pitch_latest = 0.0f;
 volatile bool     g_yaw_valid = false;      // becomes true after 1st good sample
 static uint32_t   g_yaw_last_used_us = 0;   // EKF consumer: last stamp consumed
+volatile float g_ax_latest = 0.0f, g_ay_latest = 0.0f, g_az_latest = 0.0f;
+volatile float g_gx_latest = 0.0f, g_gy_latest = 0.0f, g_gz_latest = 0.0f;
 portMUX_TYPE g_imuMux = portMUX_INITIALIZER_UNLOCKED;
-constexpr uint32_t IMU_FRESHNESS_US = 150000;  // 50 ms
-
-//------------EKF CONFIG--------------
-EkfYawConfig cfg;
 
 // TOF OBJECTS
 #define TOF_SDA_PIN 36
@@ -176,27 +174,25 @@ float joyturretY = 0.0f;  // Turret joystick Y-axis
 String btn = "stop"; // Button pressed (e.g., 'f' for forward, 'b' for backward)
 float value = 0.0f; // Value of the button pressed
 
-// Odometry timing
-unsigned long lastOdometryTime = 0;
-const unsigned long ODOMETRY_INTERVAL = 100; // Odometry update interval in ms
-
 // ----------------- UART Protocol -----------------
 static const uint16_t MAGIC = 0xCAFE;
 static const uint16_t VER   = 1;
 static const uint16_t TYPE_CMD  = 0x0001; // PC->ESP : left,right
 static const uint16_t TYPE_CMD3 = 0x0011; // PC->ESP : left,right,turret
 static const uint16_t TYPE_ENC  = 0x0003; // ESP->PC : encoders
-static const uint16_t TYPE_POSE = 0x0004; // ESP->PC : pose (x,y,theta) + uncertainty
+static const uint16_t TYPE_IMU = 0x0004; // ESP->PC : raw IMU data
+
 // Latest commands received over UART (ROS)
 volatile float uart_left_cmd = 0.0f;
 volatile float uart_right_cmd = 0.0f;
 volatile float uart_turret_cmd = 0.0f;
 volatile uint32_t last_uart_cmd_ms = 0;
-static uint32_t pose_seq = 0;
 // Enc packet sequence
 static uint32_t enc_seq = 0;
-
+// IMU packet sequence
+static uint32_t imu_seq = 0;
 #pragma pack(push,1)
+
 struct CmdPacket {
   uint16_t magic, ver, type;
   uint32_t seq;
@@ -218,21 +214,22 @@ struct EncPacket {
   int32_t ticksL, ticksR, ticksT;
   uint16_t crc16;
 };
-struct PosePacket {
+struct IMUPacket {
   uint16_t magic, ver, type;
   uint32_t seq;
   uint64_t t_tx_ns;
-  float x, y, theta;           // Robot pose in meters and radians
-  float sigma_x, sigma_y, sigma_theta; // Uncertainties
-  uint8_t ekf_status;          // 0=odometry_only, 1=ekf_fused, 2=imu_invalid
+  float roll, pitch, yaw; // radians (BNO055 Euler, wrapped to ±π)
+  float ax, ay, az;       // m/s² linear acceleration (gravity removed)
+  float gx, gy, gz;       // rad/s angular velocity
   uint16_t crc16;
 };
+
 #pragma pack(pop)
 
 static const size_t CMD_SIZE  = sizeof(CmdPacket);   // 2-float
 static const size_t CMD3_SIZE = sizeof(Cmd3Packet);  // 3-float
 static const size_t ENC_SIZE  = sizeof(EncPacket);
-static const size_t POSE_SIZE = sizeof(PosePacket);
+static const size_t IMU_SIZE = sizeof(IMUPacket);
 
 // CRC32->16 surrogate (must match Pi side)
 uint16_t crc16_surrogate(const uint8_t* data, size_t n) {
@@ -247,29 +244,29 @@ uint16_t crc16_surrogate(const uint8_t* data, size_t n) {
   return (uint16_t)(c & 0xFFFF);
 }
 
-void transmitPoseData() {
-    PosePacket pose;
-    pose.magic = MAGIC; 
-    pose.ver = VER; 
-    pose.type = TYPE_POSE;
-    pose.seq = ++pose_seq;
-    pose.t_tx_ns = (uint64_t)micros() * 1000ull;
-    pose.x = getRobotX();
-    pose.y = getRobotY();
-    pose.theta = getRobotTheta();
-    pose.sigma_x = getUncertaintyX();
-    pose.sigma_y = getUncertaintyY();
-    pose.sigma_theta = getUncertaintyTheta();
-    if (sens.getStatus() == IMU_OK && sens.isDataValid()) {
-        pose.ekf_status = 1; // EKF fused
-    } else if (sens.getStatus() != IMU_INIT_FAILED) {
-        pose.ekf_status = 2; // IMU available but invalid/uncalibrated
-    } else {
-        pose.ekf_status = 0; // Odometry only
-    }
-    pose.crc16 = crc16_surrogate((uint8_t*)&pose, POSE_SIZE - 2);
-    Serial0.write((uint8_t*)&pose, POSE_SIZE);
+
+void transmitIMUData()
+{
+  float r, p, y, ax, ay, az, gx, gy, gz;
+  taskENTER_CRITICAL(&g_imuMux);
+  r  = g_roll_latest;  p  = g_pitch_latest; y  = g_yaw_latest;
+  ax = g_ax_latest;    ay = g_ay_latest;    az = g_az_latest;
+  gx = g_gx_latest;    gy = g_gy_latest;    gz = g_gz_latest;
+  taskEXIT_CRITICAL(&g_imuMux);
+
+  IMUPacket pkt;
+  pkt.magic = MAGIC;
+  pkt.ver   = VER;
+  pkt.type  = TYPE_IMU;
+  pkt.seq   = ++imu_seq;
+  pkt.t_tx_ns = (uint64_t)micros() * 1000ull;
+  pkt.roll = r; pkt.pitch = p; pkt.yaw = y;
+  pkt.ax = ax;  pkt.ay = ay;  pkt.az = az;
+  pkt.gx = gx;  pkt.gy = gy;  pkt.gz = gz;
+  pkt.crc16 = crc16_surrogate((uint8_t*)&pkt, IMU_SIZE - 2);
+  Serial0.write((uint8_t*)&pkt, IMU_SIZE);
 }
+
 
 // ------------- Units & conversion -------------
 constexpr float WHEEL_RADIUS_M = 0.0762f;      // your wheel radius
@@ -335,15 +332,29 @@ void imu_task(void*){
   TickType_t last = xTaskGetTickCount();
   for(;;){
       sens.update();
-      float r, p, y;
-      sens.getRPY(r, p, y);            
-      // Store
+      float r, p, y, ax, ay, az, gx, gy, gz;
+      sens.getRPY(r, p, y);
+      sens.getLinearAccel(ax, ay, az);
+      sens.getAngularVel(gx, gy, gz);
       taskENTER_CRITICAL(&g_imuMux);
-      g_yaw_latest    = y;     
+      g_roll_latest   = r;
+      g_pitch_latest  = p;
+      g_yaw_latest    = y;
       g_yaw_latest_us = micros();
       g_yaw_valid     = true;
+      g_ax_latest = ax; g_ay_latest = ay; g_az_latest = az;
+      g_gx_latest = gx; g_gy_latest = gy; g_gz_latest = gz;
       taskEXIT_CRITICAL(&g_imuMux);
-    vTaskDelayUntil(&last, period);      
+
+      static uint32_t last_print_ms = 0;
+      // print statements
+      if (millis() - last_print_ms >= 200) {
+        last_print_ms = millis();
+        Serial.printf("RPY: %.2f %.2f %.2f | Accel: %.3f %.3f %.3f | Gyro: %.3f %.3f %.3f\n",
+          r, p, y, ax, ay, az, gx, gy, gz);
+      }
+
+    vTaskDelayUntil(&last, period);
   }
 }
 
@@ -468,40 +479,6 @@ void sendUDP(String msg) {
   }
 }
 
-//---------------------------ODOM SET---------------------------
-void setupProbabilisticEndpoints() {
-  // Endpoint to get current pose with uncertainty
-  server.on("/pose", HTTP_GET, []() {
-    String json = "{";
-    json += "\"x\":" + String(getRobotX(), 6) + ",";
-    json += "\"y\":" + String(getRobotY(), 6) + ",";
-    json += "\"theta\":" + String(getRobotTheta(), 6) + ",";
-    json += "\"uncertainty_x\":" + String(getUncertaintyX(), 6) + ",";
-    json += "\"uncertainty_y\":" + String(getUncertaintyY(), 6) + ",";
-    json += "\"uncertainty_theta\":" + String(getUncertaintyTheta(), 6);
-    json += "}";
-    server.send(200, "application/json", json);
-  });
-  
-  // Endpoint to reset odometry
-  server.on("/reset", HTTP_GET, []() {
-    resetOdometry();
-    server.send(200, "text/plain", "Odometry reset");
-  });
-  
-  // Endpoint to sample from pose distribution
-  server.on("/sample", HTTP_GET, []() {
-    float sample_x, sample_y, sample_theta;
-    samplePose(sample_x, sample_y, sample_theta);
-    String json = "{";
-    json += "\"sample_x\":" + String(sample_x, 6) + ",";
-    json += "\"sample_y\":" + String(sample_y, 6) + ",";
-    json += "\"sample_theta\":" + String(sample_theta, 6);
-    json += "}";
-    server.send(200, "application/json", json);
-  });
-}
-
 //-----------------------------------ESP SETUP-------------------------
 void setup() {
 
@@ -509,16 +486,6 @@ void setup() {
   Serial0.begin(460800);
   Serial.println("ESP32 bidirectional UART Ready");
   Serial.println("Pulling Micro-ROS");
-
-  // ----------------Initialize odometry--------------
-  initOdometry(); 
-  cfg.R_yaw_rad2 = sq(12.0f * M_PI / 180.0f);
-  cfg.gate_sigma = 3.0f;  // set <=0 to disable gating
-  cfg.alignment_timeout_ms = 5000.0f;
-  cfg.min_calibration_level = 2;
-  cfg.enable_periodic_realignment = true;
-  cfg.realignment_threshold = 30.0f * M_PI / 180.0f; // 30 degrees
-  cfg.realignment_count_threshold = 10;
 
   // ----------------WIFI SETUP----------------------------------------
   WiFi.softAP(ssid, password, 4, 0, 2);
@@ -832,13 +799,13 @@ void loop() {
       enc.t_tx_ns = (uint64_t)micros() * 1000ull;
       noInterrupts(); enc.ticksL = ticksL; enc.ticksR = ticksR; enc.ticksT = ticksT; interrupts();
       enc.crc16 = crc16_surrogate((uint8_t*)&enc, ENC_SIZE - 2);
-
+      
       Serial0.write((uint8_t*)&enc, ENC_SIZE); // binary out on the data UART
     }
-    static uint32_t last_pose_tx_ms = 0;
-    if (millis() - last_pose_tx_ms >= 10) {
-        last_pose_tx_ms = millis();
-        transmitPoseData();
+    static uint32_t last_imu_tx_ms = 0;
+    if (millis() - last_imu_tx_ms >= 10) {
+        last_imu_tx_ms = millis();
+        transmitIMUData();
     }
 
     bool useUdp = (millis() - lastUdpTime < 100);
@@ -1016,79 +983,6 @@ void loop() {
   
   // delay(100);
 
-  /////// ================= LOCALIZATION START =====================////
-
-  if(now- lastOdometryTime >= ODOMETRY_INTERVAL) {
-    // Update odometry every ODOMETRY_INTERVAL ms
-    updateOdometry(); // KF-Prediction step
-    float    yaw_sample = 0.0f;
-    uint32_t stamp_us   = 0;
-    bool     valid      = false;
-    
-    taskENTER_CRITICAL(&g_imuMux);
-    yaw_sample = g_yaw_latest;
-    stamp_us   = g_yaw_latest_us;
-    valid      = g_yaw_valid;
-    taskEXIT_CRITICAL(&g_imuMux);
-
-    if (valid && stamp_us > g_yaw_last_used_us &&
-      (micros() - stamp_us) < IMU_FRESHNESS_US) {
-      ekfYawUpdate(yaw_sample, cfg);       // correction
-      g_yaw_last_used_us = stamp_us;       // mark consumed
-    }
-  
-    // updateSampledPoseFromLastDelta();
-    // transmitPoseData();
-
-    // static unsigned long lastDetailedPrint = 0;
-    // if (now - lastDetailedPrint >= 1000) { // Print every 1-second
-    //   Serial.println("\n PROBABILISTIC ODOM ESTIMATION:");
-      printPose();
-    //   printMotionModel();
-
-    //   static unsigned long lastCovPrint = 0;
-    //   if (now - lastCovPrint >= 5000) { // Print covariance every 5 seconds
-    //     printCovariance();
-    //     lastCovPrint = now;
-    //   }
-
-    //   float sample_x, sample_y, sample_theta;
-    //   samplePose(sample_x, sample_y, sample_theta); 
-    //   Serial.printf("Sampled Pose: X=%.2f, Y=%.2f, Theta=%.2f\n", sample_x, sample_y, sample_theta * 180.0 / PI);
-    //   Serial.println("--------------------------------------------------");
-    //   lastDetailedPrint = now;
-    // }
-
-    // if (sens.getStatus() == IMU_OK && sens.isDataValid()) {
-    //     bool ekf_success = ekfYawUpdate(yaw_b, cfg);
-    //     static int ekf_accept_count = 0;
-    //     static int ekf_total_count = 0;
-    //     static unsigned long last_ekf_stats = 0;
-    //     ekf_total_count++;
-    //     if (ekf_success) ekf_accept_count++;
-    //     if (millis() - last_ekf_stats > 10000) { // Every 10 seconds
-    //         Serial.printf("EKF Stats: %d/%d (%.1f%%) measurements accepted\n",
-    //                      ekf_accept_count, ekf_total_count, 
-    //                      100.0f * ekf_accept_count / ekf_total_count);
-    //         bool aligned;
-    //         float offset;
-    //         unsigned long last_align;
-    //         getEkfAlignmentInfo(aligned, offset, last_align);
-    //         Serial.printf("EKF Alignment: %s, offset=%.1f°, age=%lums\n",
-    //                      aligned ? "YES" : "NO", offset, millis() - last_align);
-            
-    //         last_ekf_stats = millis();
-    //     }
-    // } else {
-    //     Serial.println("EKF: Using odometry only (IMU not ready)");
-    // }
-    // static unsigned long last_pose_tx = 0;
-    // if (millis() - last_pose_tx >= 50) {
-    //     transmitPoseData();
-    //     last_pose_tx = millis();
-    // }
-    lastOdometryTime = now;
-  }
   delay(10); 
 }
 

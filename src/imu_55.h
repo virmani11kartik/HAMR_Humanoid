@@ -22,6 +22,8 @@ public:
   bool begin();                 // init I2C + BNO + restore calib if present
   void update();                // call each loop (drives fusion)
   void getRPY(float& roll, float& pitch, float& yaw);
+  void getLinearAccel(float& ax, float& ay, float& az);
+  void getAngularVel(float& gx, float& gy, float& gz);
   bool isCalibrated();          // true when SYS/G/A/M == 3
   void clearCalNVS();           // manual wipe of saved calibration
 
@@ -60,7 +62,9 @@ private:
   unsigned long data_timeout_ms_ = 1000; // 1 second timeout
   uint8_t min_calib_level_ = 2;
 
-  sensors_event_t e_; // last event cache
+  sensors_event_t e_;        // Euler angles
+  sensors_event_t e_accel_;  // linear acceleration (gravity removed), m/s²
+  sensors_event_t e_gyro_;   // angular velocity, rad/s
   uint8_t last_sys_ = 0, last_gyro_ = 0, last_accel_ = 0, last_mag_ = 0;
   
   // Error tracking
