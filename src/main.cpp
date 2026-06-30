@@ -35,7 +35,7 @@ static const float GIMBAL_MAX_DPS = 200.0f;
 //
 // Roll
 static const float ROLL_KP = 8.0f;
-static const float ROLL_KI = 0.1f;
+static const float ROLL_KI = 0.0f;
 static const float ROLL_KD = 2.0f;
 
 // Pitch
@@ -52,7 +52,7 @@ static const float ERROR_DEADZONE_DEG = 0.05f;
 
 // Integrator clamp — small so KI can't wind too far while tuning.
 static const float MAX_INTEGRATOR     =  10.0f;
-static const float MIN_INTEGRATOR     = -10.0f;
+static const float MIN_INTEGRATOR     = 10.0f;
 
 // Per-axis speed clamps
 static const float ROLL_MAX_DPS  = GIMBAL_MAX_DPS;
@@ -71,6 +71,7 @@ static const uint8_t  PRINT_EVERY =  2;
 // ---------------------- State flags -----------------------------------
 static bool can_ok = false;
 static bool imu_ok = false;
+static bool target_ok = false;
 
 // ---------------------- Data structures -------------------------------
 struct AxisController {
@@ -97,8 +98,16 @@ struct MotorStatus {
 
 struct Quat { float w, x, y, z; };
 
+static Quat q_target = { 1.0f, 0.0f, 0.0f, 0.0f };
+
 static Quat quatConj(const Quat& q) {
     return { q.w, -q.x, -q.y, -q.z };
+}
+
+static Quat quatNormalize(const Quat& q) {
+    float mag = sqrtf(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
+    if (mag < 1e-6f) return { 1.0f, 0.0f, 0.0f, 0.0f };
+    return { q.w / mag, q.x / mag, q.y / mag, q.z / mag };
 }
 
 static Quat quatMul(const Quat& p, const Quat& q) {
@@ -244,6 +253,25 @@ static void can_init() {
     Serial0.printf("[CAN] started at %d bit/s\n", CAN_HZ);
 }
 
+static bool captureLevelTarget(uint32_t timeout_ms = 1000) {
+    uint32_t deadline = millis() + timeout_ms;
+    while (millis() < deadline) {
+        float qr = 0.0f, qi = 0.0f, qj = 0.0f, qk = 0.0f, acc = 0.0f;
+        if (sense.getQuaternion(qr, qi, qj, qk, acc)) {
+            q_target = quatNormalize({ qr, qi, qj, qk });
+            target_ok = true;
+            Serial0.printf(
+                "[OK] Captured level target q=(%.4f, %.4f, %.4f, %.4f)\n",
+                q_target.w, q_target.x, q_target.y, q_target.z
+            );
+            return true;
+        }
+        delay(10);
+    }
+    Serial0.println("[ERROR] Could not capture level target from IMU");
+    return false;
+}
+
 // ---------------------- PID controller --------------------------------
 
 static void seedAxis(AxisController &axis) {
@@ -311,10 +339,18 @@ void setup() {
 
     can_init();
 
-    if (imu_ok && can_ok) {
+    if (imu_ok && !captureLevelTarget()) {
+        imu_ok = false;
+    }
+
+    if (imu_ok && can_ok && target_ok) {
         // Block until both motors reply — prevents control loop from running
         // before the motor is powered and ready, which would seed the
         // integrator with stale error and cause a lurch on first response.
+        led.setPixelColor(0, led.Color(255, 180, 0));
+        led.show();
+        Serial0.println("[LED] Yellow: waiting for roll/pitch motors");
+
         Serial0.println("[BOOT] Waiting for roll/pitch motors...");
         while (true) {
             MotorStatus roll = sendSpeedCommand(MOTOR_ROLL, 0.0f);
@@ -348,9 +384,6 @@ void loop() {
     static uint32_t prev_ms  = millis();
     static uint32_t loop_seq = 0;
 
-    // Identity quaternion = level target (zero roll, zero pitch, any yaw)
-    static const Quat Q_TARGET = { 1.0f, 0.0f, 0.0f, 0.0f };
-
     static AxisController roll_axis = {
         ROLL_KP, ROLL_KI, ROLL_KD,
         ROLL_MAX_DPS, ROLL_CMD_SIGN,
@@ -378,7 +411,7 @@ void loop() {
 
         float roll_err_deg  = 0.0f;
         float pitch_err_deg = 0.0f;
-        quatErrorToRollPitch(q_current, Q_TARGET, roll_err_deg, pitch_err_deg);
+        quatErrorToRollPitch(q_current, q_target, roll_err_deg, pitch_err_deg);
 
         // Roll and pitch PID active
         float roll_dps  = updateAxisSpeed(roll_axis, roll_err_deg, dt);
